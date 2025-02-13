@@ -79,6 +79,7 @@ public class FuzzStatement extends Statement {
     private final Guidance guidance;
     private final Observability observability;
     private boolean skipExceptionSwallow;
+    private boolean getARTInput;
 
     public FuzzStatement(FrameworkMethod method, TestClass testClass,
                          GeneratorRepository generatorRepository, Guidance fuzzGuidance) {
@@ -91,6 +92,7 @@ public class FuzzStatement extends Statement {
         this.guidance = fuzzGuidance;
         this.skipExceptionSwallow = Boolean.getBoolean("jqf.failOnDeclaredExceptions");
         this.observability = new Observability(testClass.getName(), method.getName(), System.currentTimeMillis());
+        this.getARTInput = Boolean.getBoolean("jqf.getARTInput");
     }
 
     /**
@@ -121,14 +123,18 @@ public class FuzzStatement extends Statement {
                 Object [] args = {};
                 try {
                     try {
-
-                        // Generate input values
-                        StreamBackedRandom randomFile = new StreamBackedRandom(guidance.getInput(), Long.BYTES);
-                        SourceOfRandomness random = new FastSourceOfRandomness(randomFile);
-                        GenerationStatus genStatus = new NonTrackingGenerationStatus(random);
-                        args = generators.stream()
-                                .map(g -> g.generate(random, genStatus))
-                                .toArray();
+                        if (this.getARTInput) {
+                            // use ART logics
+                            args = guidance.getARTInput(generators);
+                        } else {
+                            // Generate input values
+                            StreamBackedRandom randomFile = new StreamBackedRandom(guidance.getInput(), Long.BYTES);
+                            SourceOfRandomness random = new FastSourceOfRandomness(randomFile);
+                            GenerationStatus genStatus = new NonTrackingGenerationStatus(random);
+                            args = generators.stream()
+                                    .map(g -> g.generate(random, genStatus))
+                                    .toArray();
+                        }
 
                         // Let guidance observe the generated input args
                         guidance.observeGeneratedArgs(args);
@@ -136,6 +142,7 @@ public class FuzzStatement extends Statement {
                         if (e.getCause() instanceof EOFException) {
                             // This happens when we reach EOF before reading all the random values.
                             // The only thing we can do is try again
+                            guidance.EOFcount();
                             continue;
                         } else {
                             throw e;

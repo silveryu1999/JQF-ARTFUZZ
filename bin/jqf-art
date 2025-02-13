@@ -8,10 +8,10 @@ popd > /dev/null
 ROOT_DIR=`dirname $BIN_DIR`
 
 print_usage() {
-  echo "Usage: $0 [-c CLASSPATH] [-v] [-l] [-b] [-r] TEST_CLASS TEST_METHOD [OUT_DIR [SEED_FILES...]]"
+  echo "Usage: $0 [-c CLASSPATH] [-v] [-l] [-b] TEST_CLASS TEST_METHOD [OUT_DIR [SEED_FILES...]]"
 }
 
-while getopts ":c:t:vlbr" opt; do
+while getopts ":c:t:vlb" opt; do
   case $opt in
     /?)
       echo "Invalid option: -$OPTARG" >&2
@@ -33,12 +33,17 @@ while getopts ":c:t:vlbr" opt; do
     b)
       export JVM_OPTS="$JVM_OPTS -Djqf.ei.DISABLE_SAVE_NEW_COUNTS=true"
       ;;
-    r)
-      export JVM_OPTS="$JVM_OPTS -Djqf.ei.TOTALLY_RANDOM=true"
-      ;;
   esac
 done
 shift $((OPTIND-1))
+
+export JVM_OPTS="$JVM_OPTS -Djqf.ei.TOTALLY_RANDOM=true"
+export JVM_OPTS="$JVM_OPTS -Djqf.ei.MAX_INPUT_SIZE=10240"
+export JVM_OPTS="$JVM_OPTS -Djqf.ei.FSCS_K=5"
+export JVM_OPTS="$JVM_OPTS -Djqf.ei.DISTANCE_TO_EXECUTED=0"
+export JVM_OPTS="$JVM_OPTS -Djqf.getARTInput=true"
+export JVM_OPTS="$JVM_OPTS -Djqf.ei.TRIAL_LIMIT=100000"
+export JVM_OPTS="$JVM_OPTS -Xmx8g"
 
 # Check arguments
 if [ $# -lt 2 ]; then

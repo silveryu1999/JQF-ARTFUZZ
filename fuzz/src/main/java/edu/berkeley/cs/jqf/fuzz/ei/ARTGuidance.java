@@ -29,10 +29,12 @@
  */
 package edu.berkeley.cs.jqf.fuzz.ei;
 
-import edu.berkeley.cs.jqf.fuzz.guidance.Guidance;
-import edu.berkeley.cs.jqf.fuzz.guidance.GuidanceException;
-import edu.berkeley.cs.jqf.fuzz.guidance.Result;
-import edu.berkeley.cs.jqf.fuzz.guidance.TimeoutException;
+import com.pholser.junit.quickcheck.generator.GenerationStatus;
+import com.pholser.junit.quickcheck.generator.Generator;
+import com.pholser.junit.quickcheck.random.SourceOfRandomness;
+import edu.berkeley.cs.jqf.fuzz.guidance.*;
+import edu.berkeley.cs.jqf.fuzz.junit.quickcheck.FastSourceOfRandomness;
+import edu.berkeley.cs.jqf.fuzz.junit.quickcheck.NonTrackingGenerationStatus;
 import edu.berkeley.cs.jqf.fuzz.util.*;
 import edu.berkeley.cs.jqf.instrument.tracing.FastCoverageSnoop;
 import edu.berkeley.cs.jqf.instrument.tracing.events.TraceEvent;
@@ -242,6 +244,23 @@ public class ARTGuidance implements Guidance {
     /** Whether to steal responsibility from old inputs (this increases computation cost). */
     protected final boolean STEAL_RESPONSIBILITY = Boolean.getBoolean("jqf.ei.STEAL_RESPONSIBILITY");
 
+    // ------------- ART HEURISTICS ------------
+
+    /** Size of K in FSCS. */
+    protected final int FSCS_K = Integer.getInteger("jqf.ei.FSCS_K", 1);;
+
+    /** Set of executed inputs in ART. */
+    protected ArrayList<LinearInput> executedInputs = new ArrayList<>();
+
+    /** Number of last executed inputs to calculate ART **/
+    protected final int DISTANCE_TO_EXECUTED = Integer.getInteger("jqf.ei.DISTANCE_TO_EXECUTED", 10);
+
+    /** EOF count. */
+    protected long EOFcount = 0;
+
+    /** Seconds for getARTInput() **/
+    protected double secondsGetARTInput = 0.0;
+
     /**
      * Creates a new Zest guidance instance with optional duration,
      * optional trial limit, and possibly deterministic PRNG.
@@ -259,7 +278,8 @@ public class ARTGuidance implements Guidance {
         this.random = sourceOfRandomness;
         this.testName = testName;
         this.maxDurationMillis = duration != null ? duration.toMillis() : Long.MAX_VALUE;
-        this.maxTrials = trials != null ? trials : Long.MAX_VALUE;
+        Long trialsLimit = Long.getLong("jqf.ei.TRIAL_LIMIT", 0L);
+        this.maxTrials = trials != null ? trials : (trialsLimit != 0L ? trialsLimit : Long.MAX_VALUE);
         this.outputDirectory = outputDirectory;
         this.blind = Boolean.getBoolean("jqf.ei.TOTALLY_RANDOM");
         this.validityFuzzing = !Boolean.getBoolean("jqf.ei.DISABLE_VALIDITY_FUZZING");
@@ -517,6 +537,11 @@ public class ARTGuidance implements Guidance {
                 console.printf("Execution speed:      %,d/sec now | %,d/sec overall\n", intervalExecsPerSec, execsPerSec);
                 console.printf("Total coverage:       %,d branches (%.2f%% of map)\n", nonZeroCount, nonZeroFraction);
                 console.printf("Valid coverage:       %,d branches (%.2f%% of map)\n", nonZeroValidCount, nonZeroValidFraction);
+                console.printf("EOF counts:           %,d\n", EOFcount);
+                console.printf("ART GetTime:          %f\n", secondsGetARTInput);
+                console.printf("JVM Total Memory:     %,f\n", (Runtime.getRuntime().totalMemory()) / (1024.0 * 1024));
+                console.printf("JVM Max Memory:       %,f\n", (Runtime.getRuntime().maxMemory()) / (1024.0 * 1024));
+                console.printf("JVM Free Memory:      %,f\n", (Runtime.getRuntime().freeMemory()) / (1024.0 * 1024));
             }
         }
 
@@ -639,6 +664,119 @@ public class ARTGuidance implements Guidance {
         };
     }
 
+    public int calDistance(ArrayList<Integer> a, ArrayList<Integer> b) {
+        // calculate hamming distance from a to b
+        int minLen = Math.min(a.size(), b.size());
+        int distance = 0;
+
+        for (int i = 0; i < minLen; i++) {
+            distance += Integer.bitCount(a.get(i) ^ b.get(i));
+        }
+
+        if (a.size() != b.size()) {
+            distance += Math.abs(a.size() - b.size()) * 32;
+        }
+
+        return distance;
+    }
+
+    @Override
+    public void EOFcount() {
+        EOFcount++;
+    }
+
+    @Override
+    public Object[] getARTInput(List<Generator<?>> generators) throws GuidanceException {
+        long currentTime = System.currentTimeMillis();
+
+        conditionallySynchronize(multiThreaded, () -> {
+            // Clear coverage stats for this run
+            runCoverage.clear();
+        });
+
+        Object[] args = {};
+
+        if (executedInputs.isEmpty()) {
+            // no input executed, choose a random one
+            int genCount = 0;
+            Object[] currArgs = {};
+            while (genCount < 1) {
+                currentInput = createFreshInput();
+                StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
+                SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
+                GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
+                try {
+                    currArgs = generators.stream()
+                            .map(g -> g.generate(randomSource, genStatus))
+                            .toArray();
+                } catch (IllegalStateException e) {
+                    if (e.getCause() instanceof EOFException) {
+                        // This happens when we reach EOF before reading all the random values.
+                        // The only thing we can do is try again
+                        EOFcount++;
+                        continue;
+                    } else {
+                        throw e;
+                    }
+                }
+                genCount++;
+                args = currArgs;
+            }
+        } else {
+            // generate FSCS_K random inputs
+            int genCount = 0;
+            LinearInput selectedInput = null;
+            int maxShortestDistance = -1;
+            Object[] currArgs = {};
+            while (genCount < FSCS_K) {
+                currentInput = createFreshInput();
+                StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
+                SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
+                GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
+                try {
+                    currArgs = generators.stream()
+                            .map(g -> g.generate(randomSource, genStatus))
+                            .toArray();
+                } catch (IllegalStateException e) {
+                    if (e.getCause() instanceof EOFException) {
+                        // This happens when we reach EOF before reading all the random values.
+                        // The only thing we can do is try again
+                        EOFcount++;
+                        continue;
+                    } else {
+                        throw e;
+                    }
+                }
+
+                genCount++;
+
+                int minDistance = Integer.MAX_VALUE;
+                if (DISTANCE_TO_EXECUTED == 0) {
+                    // calculate distance with all executed inputs
+                    for (LinearInput executedInput : executedInputs) {
+                        minDistance = Math.min(minDistance, calDistance(((LinearInput) currentInput).values, executedInput.values));
+                    }
+                } else {
+                    for (int i = 0; i < DISTANCE_TO_EXECUTED && i < executedInputs.size(); i++) {
+                        minDistance = Math.min(minDistance,calDistance(((LinearInput) currentInput).values, executedInputs.get(executedInputs.size() - i - 1).values));
+                    }
+                }
+                if (minDistance > maxShortestDistance) {
+                    selectedInput = (LinearInput) currentInput;
+                    args = currArgs;
+                    maxShortestDistance = minDistance;
+                }
+            }
+
+            currentInput = selectedInput;
+        }
+
+        long elapsedTime = System.currentTimeMillis() - currentTime;
+        secondsGetARTInput = (elapsedTime * 1.0);
+
+        return args;
+    }
+
     @Override
     public InputStream getInput() throws GuidanceException {
         conditionallySynchronize(multiThreaded, () -> {
@@ -732,6 +870,8 @@ public class ARTGuidance implements Guidance {
                 // Increment valid counter
                 numValid++;
             }
+
+            executedInputs.add((LinearInput) currentInput);
 
             if (result == Result.SUCCESS || (result == Result.INVALID && !SAVE_ONLY_VALID)) {
 

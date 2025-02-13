@@ -30,9 +30,11 @@ package edu.berkeley.cs.jqf.fuzz.guidance;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import com.pholser.junit.quickcheck.generator.Generator;
 import edu.berkeley.cs.jqf.fuzz.junit.TrialRunner;
 import edu.berkeley.cs.jqf.fuzz.junit.quickcheck.FuzzStatement;
 import edu.berkeley.cs.jqf.instrument.tracing.events.TraceEvent;
@@ -230,4 +232,7 @@ public interface Guidance {
         new TrialRunner(testClass.getJavaClass(), method, args).run();
     }
 
+    default Object[] getARTInput(List<Generator<?>> generators) throws IllegalStateException, GuidanceException { return null; }
+
+    default void EOFcount() { return; }
 }
