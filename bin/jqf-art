@@ -39,9 +39,9 @@ shift $((OPTIND-1))
 
 export JVM_OPTS="$JVM_OPTS -Djqf.ei.TOTALLY_RANDOM=true"
 export JVM_OPTS="$JVM_OPTS -Djqf.ei.MAX_INPUT_SIZE=10240"
-export JVM_OPTS="$JVM_OPTS -Djqf.ei.FSCS_K=5"
+#export JVM_OPTS="$JVM_OPTS -Djqf.ei.FSCS_K=5"
 export JVM_OPTS="$JVM_OPTS -Djqf.ei.DISTANCE_TO_EXECUTED=0"
-export JVM_OPTS="$JVM_OPTS -Djqf.getARTInput=true"
+#export JVM_OPTS="$JVM_OPTS -Djqf.getARTInput=true"
 export JVM_OPTS="$JVM_OPTS -Djqf.ei.TRIAL_LIMIT=100000"
 export JVM_OPTS="$JVM_OPTS -Xmx8g"
 
