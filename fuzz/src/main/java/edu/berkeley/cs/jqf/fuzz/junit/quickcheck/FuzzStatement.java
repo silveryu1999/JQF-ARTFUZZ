@@ -30,6 +30,7 @@
 package edu.berkeley.cs.jqf.fuzz.junit.quickcheck;
 
 import java.io.EOFException;
+import java.io.InputStream;
 import java.lang.reflect.Parameter;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -41,6 +42,7 @@ import com.pholser.junit.quickcheck.generator.Generator;
 import com.pholser.junit.quickcheck.internal.ParameterTypeContext;
 import com.pholser.junit.quickcheck.internal.generator.GeneratorRepository;
 import com.pholser.junit.quickcheck.random.SourceOfRandomness;
+import edu.berkeley.cs.jqf.fuzz.ei.ARTFUZZGuidance;
 import edu.berkeley.cs.jqf.fuzz.ei.ZestGuidance;
 import edu.berkeley.cs.jqf.fuzz.guidance.Guidance;
 import edu.berkeley.cs.jqf.fuzz.guidance.GuidanceException;
@@ -80,6 +82,7 @@ public class FuzzStatement extends Statement {
     private final Observability observability;
     private boolean skipExceptionSwallow;
     private boolean getARTInput;
+    private boolean getARTFUZZInput;
 
     public FuzzStatement(FrameworkMethod method, TestClass testClass,
                          GeneratorRepository generatorRepository, Guidance fuzzGuidance) {
@@ -93,6 +96,7 @@ public class FuzzStatement extends Statement {
         this.skipExceptionSwallow = Boolean.getBoolean("jqf.failOnDeclaredExceptions");
         this.observability = new Observability(testClass.getName(), method.getName(), System.currentTimeMillis());
         this.getARTInput = Boolean.getBoolean("jqf.getARTInput");
+        this.getARTFUZZInput = Boolean.getBoolean("jqf.getARTFUZZInput");
     }
 
     /**
@@ -126,6 +130,17 @@ public class FuzzStatement extends Statement {
                         if (this.getARTInput) {
                             // use ART logics
                             args = guidance.getARTInput(generators);
+                        } else if (this.getARTFUZZInput) {
+                            InputStream is = guidance.getARTFUZZInput(generators);
+                            if (is == null) {
+                                continue;
+                            }
+                            StreamBackedRandom randomFile = new StreamBackedRandom(is, Long.BYTES);
+                            SourceOfRandomness random = new FastSourceOfRandomness(randomFile);
+                            GenerationStatus genStatus = new NonTrackingGenerationStatus(random);
+                            args = generators.stream()
+                                    .map(g -> g.generate(random, genStatus))
+                                    .toArray();
                         } else {
                             // Generate input values
                             StreamBackedRandom randomFile = new StreamBackedRandom(guidance.getInput(), Long.BYTES);

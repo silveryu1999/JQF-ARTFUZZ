@@ -61,7 +61,7 @@ import static java.lang.Math.log;
  *
  * @author Rohan Padhye
  */
-public class ARTGuidance implements Guidance {
+public class ARTFUZZGuidance implements Guidance {
 
     /** Probability that a standard mutation sets the byte to just zero instead of a random value. */
     protected final double MUTATION_ZERO_PROBABILITY = 0.1;
@@ -121,6 +121,21 @@ public class ARTGuidance implements Guidance {
 
     /** Number of favored inputs in the last cycle. */
     protected int numFavoredLastCycle = 0;
+
+    /** Index of currentInput in the goodInputs -- valid after seeds are processed (OK if this is inaccurate). */
+    protected int currentParentGoodInputIdx = 0;
+
+    /** Number of mutated inputs generated from good currentInput. */
+    protected int numChildrenGeneratedForCurrentParentGoodInput = 0;
+
+    /** Current normal currentInput **/
+    protected Input<?> currentNormalInput;
+
+    /** Number of mutated inputs generated from normal currentInput. */
+    protected int numChildrenGeneratedForCurrentParentNormalInput = 0;
+
+    /** Flag for callee to re get input **/
+    protected boolean switchFlag = false;
 
     /** Blind fuzzing -- if true then the queue is always empty. */
     protected boolean blind;
@@ -257,20 +272,55 @@ public class ARTGuidance implements Guidance {
     // ------------- ART HEURISTICS ------------
 
     /** Size of K in FSCS. */
-    protected final int FSCS_K = Integer.getInteger("jqf.ei.FSCS_K", 1);
+    protected final int FSCS_K = Integer.getInteger("jqf.ei.FSCS_K", 100);
 
-    /** Set of executed inputs in ART. */
-    protected ArrayList<LinearInput> executedInputs = new ArrayList<>();
+    /** ART to good inputs baseline. */
+    protected final int ART_TO_GOOD_BASELINE = Integer.getInteger("jqf.ei.ART_TO_GOOD_BASELINE", 100);
 
-    /** Number of last executed inputs to calculate ART **/
-    /** from 0 to 99 (first 0% - 99% to be ignored)**/
-    protected final int EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE = Integer.getInteger("jqf.ei.EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE", 0);
+    /** ART to unique failed inputs baseline. */
+    protected final int ART_TO_FAILED_BASELINE = Integer.getInteger("jqf.ei.ART_TO_FAILED_BASELINE", 100);
+
+    /** ART mutation baseline. */
+    protected final int ART_MUTATE_BASELINE = Integer.getInteger("jqf.ei.ART_MUTATE_BASELINE", 100);
+
+    /** Normal mutation factor. */
+    protected final int NORMAL_MUTATE_FACTOR = Integer.getInteger("jqf.ei.NORMAL_MUTATE_FACTOR", 10);
 
     /** EOF count. */
     protected long EOFcount = 0;
 
     /** Seconds for getARTInput() **/
     protected double secondsGetARTInput = 0.0;
+
+    /** Set of executed good inputs (cov++, seeds). */
+    protected ArrayList<LinearInput> goodInputs = new ArrayList<>();
+
+    /** Set of last executed normal inputs between mode switch (no cov contribution). */
+//    protected ArrayList<LinearInput> normalInputs = new ArrayList<>();
+
+    /** Set of last executed normal inputs between mode switch (no cov contribution). */
+    protected Deque<LinearInput> normalInputs = new ArrayDeque<>();
+
+    /** Set of executed unique failed inputs. */
+    protected ArrayList<LinearInput> uniqueFailedInputs = new ArrayList<>();
+
+    /** Mode of seed parent (true for good, false for normal). */
+    protected boolean CURRENT_MODE_IS_GOOD_SEED = true;
+
+    /** ART as parent count **/
+    protected long artAsParent = 0;
+
+    /** Normal as parent count **/
+    protected long normalAsParent = 0;
+
+    /** Current Mode, 0: ART, 1: GOOD, 2: NORMAL **/
+    protected int currentMode = 0;
+
+    /** Counter for ART to good **/
+    protected int counterARTToGood = 0;
+
+    /** Counter for ART to failed **/
+    protected int counterARTToFailed = 0;
 
     /**
      * Creates a new Zest guidance instance with optional duration,
@@ -285,7 +335,7 @@ public class ARTGuidance implements Guidance {
      * @param sourceOfRandomness      a pseudo-random number generator
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, Long trials, File outputDirectory, Random sourceOfRandomness) throws IOException {
+    public ARTFUZZGuidance(String testName, Duration duration, Long trials, File outputDirectory, Random sourceOfRandomness) throws IOException {
         this.random = sourceOfRandomness;
         this.testName = testName;
 
@@ -338,7 +388,7 @@ public class ARTGuidance implements Guidance {
      * @param sourceOfRandomness      a pseudo-random number generator
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, Long trials, File outputDirectory, File[] seedInputFiles, Random sourceOfRandomness) throws IOException {
+    public ARTFUZZGuidance(String testName, Duration duration, Long trials, File outputDirectory, File[] seedInputFiles, Random sourceOfRandomness) throws IOException {
         this(testName, duration, trials, outputDirectory, sourceOfRandomness);
         if (seedInputFiles != null) {
             for (File seedInputFile : seedInputFiles) {
@@ -361,7 +411,7 @@ public class ARTGuidance implements Guidance {
      * @param sourceOfRandomness      a pseudo-random number generator
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, Long trials, File outputDirectory, File seedInputDir, Random sourceOfRandomness) throws IOException {
+    public ARTFUZZGuidance(String testName, Duration duration, Long trials, File outputDirectory, File seedInputDir, Random sourceOfRandomness) throws IOException {
         this(testName, duration, trials, outputDirectory, IOUtils.resolveInputFileOrDirectory(seedInputDir), sourceOfRandomness);
     }
 
@@ -376,7 +426,7 @@ public class ARTGuidance implements Guidance {
      * @param seedInputDir the directory containing one or more input files to be used as initial inputs
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, File outputDirectory, File seedInputDir) throws IOException {
+    public ARTFUZZGuidance(String testName, Duration duration, File outputDirectory, File seedInputDir) throws IOException {
         this(testName, duration, null, outputDirectory, seedInputDir, new Random());
     }
 
@@ -390,7 +440,7 @@ public class ARTGuidance implements Guidance {
      * @param outputDirectory the directory where fuzzing results will be written
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, File outputDirectory) throws IOException {
+    public ARTFUZZGuidance(String testName, Duration duration, File outputDirectory) throws IOException {
         this(testName, duration, null, outputDirectory, new Random());
     }
 
@@ -404,7 +454,7 @@ public class ARTGuidance implements Guidance {
      * @param outputDirectory the directory where fuzzing results will be written
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, File outputDirectory, File[] seedFiles) throws IOException {
+    public ARTFUZZGuidance(String testName, Duration duration, File outputDirectory, File[] seedFiles) throws IOException {
         this(testName, duration, null, outputDirectory, seedFiles, new Random());
     }
 
@@ -535,15 +585,42 @@ public class ARTGuidance implements Guidance {
         elapsedMilliseconds = Math.max(1, elapsedMilliseconds);
         long execsPerSec = numTrials * 1000L / elapsedMilliseconds;
 
+//        String currentParentInputDesc;
+//        if (seedInputs.size() > 0 || savedInputs.isEmpty()) {
+//            currentParentInputDesc = "<seed>";
+//        } else {
+//            Input currentParentInput = savedInputs.get(currentParentInputIdx);
+//            currentParentInputDesc = currentParentInputIdx + " ";
+//            currentParentInputDesc += currentParentInput.isFavored() ? "(favored)" : "(not favored)";
+//            currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentInput +
+//                    "/" + getTargetChildrenForParent(currentParentInput) + " mutations}";
+//        }
+
         String currentParentInputDesc;
-        if (seedInputs.size() > 0 || savedInputs.isEmpty()) {
-            currentParentInputDesc = "<seed>";
+        if (currentMode == 0) {
+            currentParentInputDesc = "ART Mode";
+            currentParentInputDesc += " { toGood:" + counterARTToGood + " / toFail:" + counterARTToFailed + " }";
+        } else if (currentMode == 1) {
+            if (seedInputs.size() > 0 || goodInputs.isEmpty()) {
+                currentParentInputDesc = "<seed>";
+            } else {
+                Input currentParentInput = goodInputs.get(currentParentGoodInputIdx);
+                currentParentInputDesc = "Good " + currentParentGoodInputIdx + " ";
+                currentParentInputDesc += currentParentInput.isFavored() ? "(favored)" : "(not favored)";
+                currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentGoodInput +
+                        "/" + getTargetChildrenForParent(currentParentInput) + " mutations}";
+            }
+        } else if (currentMode == 2) {
+            if (currentNormalInput == null) {
+                currentParentInputDesc = "No normal input now";
+            } else {
+                currentParentInputDesc = "Normal Mode";
+                currentParentInputDesc += currentNormalInput.isFavored() ? "(favored)" : "(not favored)";
+                currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentNormalInput +
+                        "/" + getTargetChildrenForParent(currentNormalInput) + " mutations}";
+            }
         } else {
-            Input currentParentInput = savedInputs.get(currentParentInputIdx);
-            currentParentInputDesc = currentParentInputIdx + " ";
-            currentParentInputDesc += currentParentInput.isFavored() ? "(favored)" : "(not favored)";
-            currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentInput +
-                    "/" + getTargetChildrenForParent(currentParentInput) + " mutations}";
+            currentParentInputDesc = "None";
         }
 
         int nonZeroCount = totalCoverage.getNonZeroCount();
@@ -575,8 +652,11 @@ public class ARTGuidance implements Guidance {
                 console.printf("Valid inputs:         %,d (%.2f%%)\n", numValid, numValid * 100.0 / numTrials);
                 console.printf("Cycles completed:     %d\n", cyclesCompleted);
                 console.printf("Unique failures:      %,d\n", uniqueFailures.size());
-                console.printf("Queue size:           %,d (%,d favored last cycle)\n", savedInputs.size(), numFavoredLastCycle);
+                console.printf("Good Inputs size:     %,d (%,d favored last cycle)\n", goodInputs.size(), numFavoredLastCycle);
+                console.printf("Normal Inputs size:   %,d\n", normalInputs.size());
+                console.printf("Current Mode:         %s\n", currentMode == 0 ? "ART Mode" : (currentMode == 1 ? "Good Mode" : "Normal Mode"));
                 console.printf("Current parent input: %s\n", currentParentInputDesc);
+//                console.printf("ART Parent/Normal Parent: %,d/%,d\n", artAsParent, normalAsParent);
                 console.printf("Execution speed:      %,d/sec now | %,d/sec overall\n", intervalExecsPerSec, execsPerSec);
                 console.printf("Total coverage:       %,d branches (%.2f%% of map)\n", nonZeroCount, nonZeroFraction);
                 console.printf("Valid coverage:       %,d branches (%.2f%% of map)\n", nonZeroValidCount, nonZeroValidFraction);
@@ -623,6 +703,10 @@ public class ARTGuidance implements Guidance {
     }
 
     protected int getTargetChildrenForParent(Input parentInput) {
+        if (parentInput.id == -2) {
+            return ART_MUTATE_BASELINE;
+        }
+
         // Baseline is a constant
         int target = NUM_CHILDREN_BASELINE;
 
@@ -634,6 +718,10 @@ public class ARTGuidance implements Guidance {
         // We absolutely love favored inputs, so fuzz them more
         if (parentInput.isFavored()) {
             target = target * NUM_CHILDREN_MULTIPLIER_FAVORED;
+        }
+
+        if (parentInput.id == -3) {
+            target = target * NORMAL_MUTATE_FACTOR;
         }
 
         return target;
@@ -649,7 +737,7 @@ public class ARTGuidance implements Guidance {
         infoLog("Here is a list of favored inputs:");
         int sumResponsibilities = 0;
         numFavoredLastCycle = 0;
-        for (Input input : savedInputs) {
+        for (Input input : goodInputs) {
             if (input.isFavored()) {
                 int responsibleFor = input.responsibilities.size();
                 infoLog("Input %d is responsible for %d branches", input.id, responsibleFor);
@@ -709,10 +797,9 @@ public class ARTGuidance implements Guidance {
 
     public int calDistance(ArrayList<Integer> a, ArrayList<Integer> b) {
         // calculate hamming distance from a to b
-        int minLen = Math.min(a.size(), b.size());
         int distance = 0;
 
-        for (int i = 0; i < minLen; i++) {
+        for (int i = 0; i < Math.min(a.size(), b.size()); i++) {
             distance += Integer.bitCount(a.get(i) ^ b.get(i));
         }
 
@@ -729,98 +816,442 @@ public class ARTGuidance implements Guidance {
     }
 
     @Override
-    public Object[] getARTInput(List<Generator<?>> generators) throws GuidanceException {
+    public InputStream getARTFUZZInput(List<Generator<?>> generators) throws GuidanceException {
         long currentTime = System.currentTimeMillis();
+        switchFlag = false;
 
         conditionallySynchronize(multiThreaded, () -> {
             // Clear coverage stats for this run
             runCoverage.clear();
-        });
 
-        Object[] args = {};
-
-        if (executedInputs.isEmpty()) {
-            // no input executed, choose a random one
-            int genCount = 0;
-            Object[] currArgs = {};
-            while (genCount < 1) {
-                currentInput = createFreshInput();
-                StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
-                SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
-                GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
-                try {
-                    currArgs = generators.stream()
-                            .map(g -> g.generate(randomSource, genStatus))
-                            .toArray();
-                } catch (IllegalStateException e) {
-                    if (e.getCause() instanceof EOFException) {
-                        // This happens when we reach EOF before reading all the random values.
-                        // The only thing we can do is try again
-                        EOFcount++;
-                        continue;
-                    } else {
-                        throw e;
+            if (currentMode == 0) {
+                // ART Mode
+                if (numTrials == 0 || goodInputs.isEmpty()) {
+                    // generate one random input
+                    int genCount = 0;
+                    while (genCount < 1) {
+                        currentInput = createFreshInput();
+                        StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
+                        SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
+                        GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
+                        try {
+                            generators.stream()
+                                    .map(g -> g.generate(randomSource, genStatus))
+                                    .toArray();
+                        } catch (IllegalStateException e) {
+                            if (e.getCause() instanceof EOFException) {
+                                // This happens when we reach EOF before reading all the random values.
+                                // The only thing we can do is try again
+                                EOFcount++;
+                                continue;
+                            } else {
+                                throw e;
+                            }
+                        }
+                        genCount++;
                     }
-                }
-                genCount++;
-                args = currArgs;
-            }
-        } else {
-            // generate FSCS_K random inputs
-            int genCount = 0;
-            LinearInput selectedInput = null;
-            int maxShortestDistance = -1;
-            Object[] currArgs = {};
-            while (genCount < FSCS_K) {
-                currentInput = createFreshInput();
-                StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
-                SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
-                GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
-                try {
-                    currArgs = generators.stream()
-                            .map(g -> g.generate(randomSource, genStatus))
-                            .toArray();
-                } catch (IllegalStateException e) {
-                    if (e.getCause() instanceof EOFException) {
-                        // This happens when we reach EOF before reading all the random values.
-                        // The only thing we can do is try again
-                        EOFcount++;
-                        continue;
-                    } else {
-                        throw e;
-                    }
-                }
 
-                genCount++;
-
-                int minDistance = Integer.MAX_VALUE;
-                if (EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE == 0) {
-                    // calculate distance with all executed inputs
-                    for (LinearInput executedInput : executedInputs) {
-                        minDistance = Math.min(minDistance, calDistance(((LinearInput) currentInput).values, executedInput.values));
-                    }
+                    currentInput = new LinearInput((LinearInput) currentInput);
                 } else {
-                    // ignore the first part
-                    int numOfLastExecutedInputs = (int) (executedInputs.size() * ((100 - EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE) * 1.0 / 100.0));
-                    for (int i = 0; i < numOfLastExecutedInputs && i < executedInputs.size(); i++) {
-                        minDistance = Math.min(minDistance,calDistance(((LinearInput) currentInput).values, executedInputs.get(executedInputs.size() - i - 1).values));
+                    // generate ART_TO_GOOD_BASELINE + ART_TO_FAILED_BASELINE inputs
+                    // candidate set size is FSCS_K
+                    if (counterARTToGood < ART_TO_GOOD_BASELINE) {
+                        LinearInput selectedInput = null;
+                        int maxShortestDistance = Integer.MIN_VALUE;
+
+                        int genCount = 0;
+                        while (genCount < FSCS_K) {
+                            currentInput = createFreshInput();
+                            StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
+                            SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
+                            GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
+                            try {
+                                generators.stream()
+                                        .map(g -> g.generate(randomSource, genStatus))
+                                        .toArray();
+                            } catch (IllegalStateException e) {
+                                if (e.getCause() instanceof EOFException) {
+                                    // This happens when we reach EOF before reading all the random values.
+                                    // The only thing we can do is try again
+                                    EOFcount++;
+                                    continue;
+                                } else {
+                                    throw e;
+                                }
+                            }
+                            genCount++;
+
+                            int minDistanceToSeed = Integer.MAX_VALUE;
+
+                            for (LinearInput seed : goodInputs) {
+                                minDistanceToSeed = Math.min(minDistanceToSeed, calDistance(((LinearInput) currentInput).values, seed.values));
+                            }
+
+                            if (minDistanceToSeed > maxShortestDistance) {
+                                // set as favoured, populate with total coverage
+                                currentInput.id = -4;
+                                currentInput.coverage = totalCoverage.copy();
+                                currentInput.nonZeroCoverage = currentInput.coverage.getNonZeroCount();
+                                currentInput.setFavored();
+
+                                selectedInput = (LinearInput) currentInput;
+                                maxShortestDistance = minDistanceToSeed;
+                            }
+                        }
+
+                        currentInput = new LinearInput(selectedInput);
+                        counterARTToGood++;
+                    } else if (counterARTToFailed < ART_TO_FAILED_BASELINE) {
+                        if (uniqueFailedInputs.isEmpty()) {
+                            switchFlag = true;
+                            counterARTToFailed = ART_TO_FAILED_BASELINE;
+                        } else {
+                            LinearInput selectedInput = null;
+                            int maxShortestDistance = Integer.MIN_VALUE;
+
+                            int genCount = 0;
+                            while (genCount < FSCS_K) {
+                                currentInput = createFreshInput();
+                                StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
+                                SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
+                                GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
+                                try {
+                                    generators.stream()
+                                            .map(g -> g.generate(randomSource, genStatus))
+                                            .toArray();
+                                } catch (IllegalStateException e) {
+                                    if (e.getCause() instanceof EOFException) {
+                                        // This happens when we reach EOF before reading all the random values.
+                                        // The only thing we can do is try again
+                                        EOFcount++;
+                                        continue;
+                                    } else {
+                                        throw e;
+                                    }
+                                }
+                                genCount++;
+
+                                int minDistanceToUniqueFailures = Integer.MAX_VALUE;
+
+                                for (LinearInput uniqueFailure : uniqueFailedInputs) {
+                                    minDistanceToUniqueFailures = Math.min(minDistanceToUniqueFailures, calDistance(((LinearInput) currentInput).values, uniqueFailure.values));
+                                }
+
+                                if (minDistanceToUniqueFailures > maxShortestDistance) {
+                                    // set as favoured, populate with total coverage
+                                    currentInput.id = -5;
+                                    currentInput.coverage = totalCoverage.copy();
+                                    currentInput.nonZeroCoverage = currentInput.coverage.getNonZeroCount();
+                                    currentInput.setFavored();
+
+                                    selectedInput = (LinearInput) currentInput;
+                                    maxShortestDistance = minDistanceToUniqueFailures;
+                                }
+                            }
+
+                            currentInput = new LinearInput(selectedInput);
+                            counterARTToFailed++;
+                        }
+                    } else {
+                        // switch mode
+                        switchFlag = true;
+                        currentMode = 1;
+                        counterARTToGood = 0;
+                        counterARTToFailed = 0;
                     }
                 }
-                if (minDistance > maxShortestDistance) {
-                    selectedInput = (LinearInput) currentInput;
-                    args = currArgs;
-                    maxShortestDistance = minDistance;
+            } else if (currentMode == 1) {
+                // Good Inputs Mode
+                // generate new inputs from existing good inputs (seeds)
+                // The number of children to produce is determined by how much of the coverage
+                // pool this parent input hits
+                Input currentParentGoodInput = goodInputs.get(currentParentGoodInputIdx);
+                int targetNumChildren = getTargetChildrenForParent(currentParentGoodInput);
+                if (numChildrenGeneratedForCurrentParentGoodInput >= targetNumChildren) {
+                    // Select the next good input to fuzz
+                    currentParentGoodInputIdx = (currentParentGoodInputIdx + 1) % goodInputs.size();
+
+                    // Count cycles
+                    if (currentParentGoodInputIdx == 0) {
+                        completeCycle();
+                    }
+
+                    numChildrenGeneratedForCurrentParentGoodInput = 0;
+
+                    switchFlag = true;
+                    currentMode = 2;
+                } else {
+                    Input parent = goodInputs.get(currentParentGoodInputIdx);
+
+                    // Fuzz it to get a new input
+                    // infoLog("Mutating input: %s", parent.desc);
+                    currentInput = parent.fuzz(random);
+                    numChildrenGeneratedForCurrentParentGoodInput++;
+
+                    // Write it to disk for debugging
+                    try {
+                        writeCurrentInputToFile(currentInputFile);
+                    } catch (IOException ignore) {
+                    }
+
+                    // Start time-counting for timeout handling
+                    this.runStart = new Date();
+                    this.branchCount = 0;
+                }
+            } else {
+                // Normal Inputs Mode
+                // for those executed normal inputs stored during every mode switch,
+                // calculate their distance to good inputs and unique failures,
+                // eventually, select the one with the maximum distance as parent.
+                if (currentNormalInput == null || numChildrenGeneratedForCurrentParentNormalInput == 0) {
+                    LinearInput selectedInput = null;
+                    int maxShortestDistance = Integer.MIN_VALUE;
+
+                    // check the last stored normal inputs between mode switch
+                    while (!normalInputs.isEmpty()) {
+                        LinearInput candidate = normalInputs.pollFirst();
+
+                        int minDistanceToSeed = Integer.MAX_VALUE;
+                        int minDistanceToUniqueFailures = Integer.MAX_VALUE;
+
+                        for (LinearInput seed : goodInputs) {
+                            minDistanceToSeed = Math.min(minDistanceToSeed, calDistance(candidate.values, seed.values));
+                        }
+                        for (LinearInput uniqueFailure : uniqueFailedInputs) {
+                            minDistanceToUniqueFailures = Math.min(minDistanceToUniqueFailures, calDistance(candidate.values, uniqueFailure.values));
+                        }
+
+                        if (minDistanceToSeed + minDistanceToUniqueFailures > maxShortestDistance) {
+                            selectedInput = candidate;
+                            maxShortestDistance = minDistanceToSeed + minDistanceToUniqueFailures;
+                        }
+                    }
+                    // finally, duplicate the selected input as parent
+                    currentNormalInput = selectedInput;
+                }
+
+                if (currentNormalInput == null) {
+                    switchFlag = true;
+                    currentMode = 0;
+                } else {
+                    int targetNumChildren = getTargetChildrenForParent(currentNormalInput);
+                    if (numChildrenGeneratedForCurrentParentNormalInput >= targetNumChildren) {
+                        numChildrenGeneratedForCurrentParentNormalInput = 0;
+                        switchFlag = true;
+                        currentMode = 0;
+                    } else {
+                        Input parent = currentNormalInput;
+
+                        // Fuzz it to get a new input
+                        // infoLog("Mutating input: %s", parent.desc);
+                        currentInput = parent.fuzz(random);
+                        numChildrenGeneratedForCurrentParentNormalInput++;
+
+                        // Write it to disk for debugging
+                        try {
+                            writeCurrentInputToFile(currentInputFile);
+                        } catch (IOException ignore) {
+                        }
+
+                        // Start time-counting for timeout handling
+                        this.runStart = new Date();
+                        this.branchCount = 0;
+                    }
                 }
             }
-
-            currentInput = selectedInput;
-        }
+        });
 
         long elapsedTime = System.currentTimeMillis() - currentTime;
         secondsGetARTInput = (elapsedTime * 1.0);
 
-        return args;
+        if (switchFlag) {
+            // return null to tell the callee to get input again
+            return null;
+        } else {
+            return createParameterStream();
+        }
     }
+
+//    @Override
+//    public InputStream getARTFUZZInput(List<Generator<?>> generators) throws GuidanceException {
+//        long currentTime = System.currentTimeMillis();
+//        switchFlag = false;
+//
+//        conditionallySynchronize(multiThreaded, () -> {
+//            // Clear coverage stats for this run
+//            runCoverage.clear();
+//
+//            if (numTrials == 0) {
+//                // the very first one, generate randomly
+//                currentInput = createFreshInput();
+//            } else {
+//                // first, detect the current mode
+//                if (CURRENT_MODE_IS_GOOD_SEED && !goodInputs.isEmpty()) {
+//                    // generate new inputs from existing good inputs (seeds)
+//                    // The number of children to produce is determined by how much of the coverage
+//                    // pool this parent input hits
+//                    Input currentParentGoodInput = goodInputs.get(currentParentGoodInputIdx);
+//                    int targetNumChildren = getTargetChildrenForParent(currentParentGoodInput);
+//                    if (numChildrenGeneratedForCurrentParentGoodInput >= targetNumChildren) {
+//                        // Select the next good input to fuzz
+//                        currentParentGoodInputIdx = (currentParentGoodInputIdx + 1) % goodInputs.size();
+//
+//                        // Count cycles
+//                        if (currentParentGoodInputIdx == 0) {
+//                            completeCycle();
+//                        }
+//
+//                        numChildrenGeneratedForCurrentParentGoodInput = 0;
+//
+//                        switchFlag = true;
+//                    } else {
+//                        Input parent = goodInputs.get(currentParentGoodInputIdx);
+//
+//                        // Fuzz it to get a new input
+//                        // infoLog("Mutating input: %s", parent.desc);
+//                        currentInput = parent.fuzz(random);
+//                        numChildrenGeneratedForCurrentParentGoodInput++;
+//
+//                        // Write it to disk for debugging
+//                        try {
+//                            writeCurrentInputToFile(currentInputFile);
+//                        } catch (IOException ignore) {
+//                        }
+//
+//                        // Start time-counting for timeout handling
+//                        this.runStart = new Date();
+//                        this.branchCount = 0;
+//                    }
+//                } else {
+//                    // generate new inputs from last normal inputs
+//                    if (goodInputs.isEmpty()) {
+//                        // generate a random one to get good seed
+//                        currentInput = createFreshInput();
+//                    } else {
+//                        // for those executed normal inputs stored during every mode switch,
+//                        // calculate their distance to good inputs and unique failures,
+//                        // also randomly generate FSCS_K fresh inputs and calculate the distance,
+//                        // eventually, select the one with the maximum distance as parent.
+//                        if (currentNormalInput == null || numChildrenGeneratedForCurrentParentNormalInput == 0) {
+//                            // select a new parent
+//                            LinearInput selectedInput = null;
+//                            int maxShortestDistance = Integer.MIN_VALUE;
+//                            Boolean selectART = false;
+//                            // first, check the last stored normal inputs between mode switch
+//                            while (!normalInputs.isEmpty()) {
+//                                LinearInput candidate = normalInputs.pollFirst();
+//
+//                                int minDistanceToSeed = Integer.MAX_VALUE;
+//                                int minDistanceToUniqueFailures = Integer.MAX_VALUE;
+//
+//                                for (LinearInput seed : goodInputs) {
+//                                    minDistanceToSeed = Math.min(minDistanceToSeed, calDistance(candidate.values, seed.values));
+//                                }
+//                                for (LinearInput uniqueFailure : uniqueFailedInputs) {
+//                                    minDistanceToUniqueFailures = Math.min(minDistanceToUniqueFailures, calDistance(candidate.values, uniqueFailure.values));
+//                                }
+//
+//                                if (minDistanceToSeed + minDistanceToUniqueFailures > maxShortestDistance) {
+//                                    selectedInput = candidate;
+//                                    maxShortestDistance = minDistanceToSeed + minDistanceToUniqueFailures;
+//                                }
+//                            }
+//
+//                            // then, use FSCS_ART to generate FSCS_K new random candidates
+//                            int genCount = 0;
+//                            while (genCount < FSCS_K) {
+//                                currentInput = createFreshInput();
+//                                StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
+//                                SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
+//                                GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
+//                                try {
+//                                    generators.stream()
+//                                            .map(g -> g.generate(randomSource, genStatus))
+//                                            .toArray();
+//                                } catch (IllegalStateException e) {
+//                                    if (e.getCause() instanceof EOFException) {
+//                                        // This happens when we reach EOF before reading all the random values.
+//                                        // The only thing we can do is try again
+//                                        EOFcount++;
+//                                        continue;
+//                                    } else {
+//                                        throw e;
+//                                    }
+//                                }
+//
+//                                genCount++;
+//
+//                                int minDistanceToSeed = Integer.MAX_VALUE;
+//                                int minDistanceToUniqueFailures = Integer.MAX_VALUE;
+//
+//                                for (LinearInput seed : goodInputs) {
+//                                    minDistanceToSeed = Math.min(minDistanceToSeed, calDistance(((LinearInput) currentInput).values, seed.values));
+//                                }
+//                                for (LinearInput uniqueFailure : uniqueFailedInputs) {
+//                                    minDistanceToUniqueFailures = Math.min(minDistanceToUniqueFailures, calDistance(((LinearInput) currentInput).values, uniqueFailure.values));
+//                                }
+//
+//                                if (minDistanceToSeed + minDistanceToUniqueFailures > maxShortestDistance) {
+//                                    // set as favoured, populate with total coverage
+//                                    currentInput.id = -2;
+//                                    currentInput.coverage = totalCoverage.copy();
+//                                    currentInput.nonZeroCoverage = currentInput.coverage.getNonZeroCount();
+//                                    currentInput.setFavored();
+//
+//                                    selectedInput = (LinearInput) currentInput;
+//                                    maxShortestDistance = minDistanceToSeed + minDistanceToUniqueFailures;
+//                                    selectART = true;
+//                                }
+//                            }
+//
+//                            if (selectART) {
+//                                artAsParent++;
+//                            } else {
+//                                normalAsParent++;
+//                            }
+//
+//                            // finally, duplicate the selected input as parent
+//                            currentNormalInput = selectedInput;
+//                        }
+//
+//                        int targetNumChildren = getTargetChildrenForParent(currentNormalInput);
+//                        if (numChildrenGeneratedForCurrentParentNormalInput >= targetNumChildren) {
+//                            numChildrenGeneratedForCurrentParentNormalInput = 0;
+//                            switchFlag = true;
+//                        } else {
+//                            Input parent = currentNormalInput;
+//
+//                            // Fuzz it to get a new input
+//                            // infoLog("Mutating input: %s", parent.desc);
+//                            currentInput = parent.fuzz(random);
+//                            numChildrenGeneratedForCurrentParentNormalInput++;
+//
+//                            // Write it to disk for debugging
+//                            try {
+//                                writeCurrentInputToFile(currentInputFile);
+//                            } catch (IOException ignore) {
+//                            }
+//
+//                            // Start time-counting for timeout handling
+//                            this.runStart = new Date();
+//                            this.branchCount = 0;
+//                        }
+//                    }
+//                }
+//            }
+//        });
+//
+//        long elapsedTime = System.currentTimeMillis() - currentTime;
+//        secondsGetARTInput = (elapsedTime * 1.0);
+//
+//        if (switchFlag) {
+//            // return null to tell the callee to get input again
+//            CURRENT_MODE_IS_GOOD_SEED = !CURRENT_MODE_IS_GOOD_SEED;
+//            return null;
+//        } else {
+//            return createParameterStream();
+//        }
+//    }
 
     @Override
     public InputStream getInput() throws GuidanceException {
@@ -918,10 +1349,6 @@ public class ARTGuidance implements Guidance {
 
             boolean save_cov_only = false;
 
-            if (blind) {
-                executedInputs.add((LinearInput) currentInput);
-            }
-
             if (result == Result.SUCCESS || (result == Result.INVALID && !SAVE_ONLY_VALID)) {
 
                 // Compute a list of keys for which this input can assume responsibility.
@@ -959,7 +1386,7 @@ public class ARTGuidance implements Guidance {
                                     "of size %d; " +
                                     "reason = %s",
                             numTrials,
-                            savedInputs.size(),
+                            goodInputs.size(),
                             currentInput.size(),
                             why);
 
@@ -969,6 +1396,22 @@ public class ARTGuidance implements Guidance {
 
                     // Update coverage information
                     updateCoverageFile();
+                } else {
+                    // normal inputs
+                    // Trim input (remove unused keys)
+                    currentInput.gc();
+
+                    // It must still be non-empty
+                    assert (currentInput.size() > 0) : String.format("Empty input: %s", currentInput.desc);
+
+                    // Second, save to queue
+                    normalInputs.add((LinearInput) currentInput);
+
+                    // Third, store basic book-keeping data
+                    currentInput.id = -3;
+                    currentInput.coverage = runCoverage.copy();
+                    currentInput.nonZeroCoverage = runCoverage.getNonZeroCount();
+//                    currentInput.setFavored();
                 }
             } else if (result == Result.FAILURE || result == Result.TIMEOUT) {
                 totalFailures++;
@@ -1011,6 +1454,9 @@ public class ARTGuidance implements Guidance {
                     if (LIBFUZZER_COMPAT_OUTPUT) {
                         displayStats(false);
                     }
+
+                    // add to unique failures
+                    uniqueFailedInputs.add((LinearInput) currentInput);
                 }
             }
 
@@ -1178,7 +1624,7 @@ public class ARTGuidance implements Guidance {
         }
 
         // Second, save to queue
-        savedInputs.add(currentInput);
+        goodInputs.add((LinearInput) currentInput);
 
         // Third, store basic book-keeping data
         currentInput.id = newInputIdx;
@@ -1186,7 +1632,7 @@ public class ARTGuidance implements Guidance {
         currentInput.coverage = runCoverage.copy();
         currentInput.nonZeroCoverage = runCoverage.getNonZeroCount();
         currentInput.offspring = 0;
-        savedInputs.get(currentParentInputIdx).offspring += 1;
+        goodInputs.get(currentParentGoodInputIdx).offspring += 1;
 
         // Fourth, assume responsibility for branches
         currentInput.responsibilities = responsibilities;

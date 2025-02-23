@@ -29,12 +29,10 @@
  */
 package edu.berkeley.cs.jqf.fuzz.ei;
 
-import com.pholser.junit.quickcheck.generator.GenerationStatus;
-import com.pholser.junit.quickcheck.generator.Generator;
-import com.pholser.junit.quickcheck.random.SourceOfRandomness;
-import edu.berkeley.cs.jqf.fuzz.guidance.*;
-import edu.berkeley.cs.jqf.fuzz.junit.quickcheck.FastSourceOfRandomness;
-import edu.berkeley.cs.jqf.fuzz.junit.quickcheck.NonTrackingGenerationStatus;
+import edu.berkeley.cs.jqf.fuzz.guidance.Guidance;
+import edu.berkeley.cs.jqf.fuzz.guidance.GuidanceException;
+import edu.berkeley.cs.jqf.fuzz.guidance.Result;
+import edu.berkeley.cs.jqf.fuzz.guidance.TimeoutException;
 import edu.berkeley.cs.jqf.fuzz.util.*;
 import edu.berkeley.cs.jqf.instrument.tracing.FastCoverageSnoop;
 import edu.berkeley.cs.jqf.instrument.tracing.events.TraceEvent;
@@ -52,8 +50,7 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-import static java.lang.Math.ceil;
-import static java.lang.Math.log;
+import static java.lang.Math.*;
 
 /**
  * A guidance that performs coverage-guided fuzzing using two coverage maps,
@@ -61,7 +58,7 @@ import static java.lang.Math.log;
  *
  * @author Rohan Padhye
  */
-public class ARTGuidance implements Guidance {
+public class RankGuidance implements Guidance {
 
     /** Probability that a standard mutation sets the byte to just zero instead of a random value. */
     protected final double MUTATION_ZERO_PROBABILITY = 0.1;
@@ -254,23 +251,23 @@ public class ARTGuidance implements Guidance {
     /** Whether to steal responsibility from old inputs (this increases computation cost). */
     protected final boolean STEAL_RESPONSIBILITY = Boolean.getBoolean("jqf.ei.STEAL_RESPONSIBILITY");
 
-    // ------------- ART HEURISTICS ------------
-
-    /** Size of K in FSCS. */
-    protected final int FSCS_K = Integer.getInteger("jqf.ei.FSCS_K", 1);
-
-    /** Set of executed inputs in ART. */
-    protected ArrayList<LinearInput> executedInputs = new ArrayList<>();
-
-    /** Number of last executed inputs to calculate ART **/
-    /** from 0 to 99 (first 0% - 99% to be ignored)**/
-    protected final int EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE = Integer.getInteger("jqf.ei.EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE", 0);
-
     /** EOF count. */
     protected long EOFcount = 0;
 
+    /** Set of new seeds (produced by current parent input). */
+    protected ArrayList<Input> newSeedsFromCurrentParent = new ArrayList<>();
+
+    /** Weight of to failure distance. */
+    protected final int TO_FAILED_DISTANCE_WEIGHT = Integer.getInteger("jqf.ei.TO_FAILED_DISTANCE_WEIGHT", 10);
+
+    /** Set of executed unique failed inputs. */
+    protected ArrayList<Input> uniqueFailedInputs = new ArrayList<>();
+
+    /** Set of new unique failed inputs. */
+    protected ArrayList<Input> newUniqueFailedInputs = new ArrayList<>();
+
     /** Seconds for getARTInput() **/
-    protected double secondsGetARTInput = 0.0;
+    protected double lastRankingTime = 0.0;
 
     /**
      * Creates a new Zest guidance instance with optional duration,
@@ -285,7 +282,7 @@ public class ARTGuidance implements Guidance {
      * @param sourceOfRandomness      a pseudo-random number generator
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, Long trials, File outputDirectory, Random sourceOfRandomness) throws IOException {
+    public RankGuidance(String testName, Duration duration, Long trials, File outputDirectory, Random sourceOfRandomness) throws IOException {
         this.random = sourceOfRandomness;
         this.testName = testName;
 
@@ -338,7 +335,7 @@ public class ARTGuidance implements Guidance {
      * @param sourceOfRandomness      a pseudo-random number generator
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, Long trials, File outputDirectory, File[] seedInputFiles, Random sourceOfRandomness) throws IOException {
+    public RankGuidance(String testName, Duration duration, Long trials, File outputDirectory, File[] seedInputFiles, Random sourceOfRandomness) throws IOException {
         this(testName, duration, trials, outputDirectory, sourceOfRandomness);
         if (seedInputFiles != null) {
             for (File seedInputFile : seedInputFiles) {
@@ -361,7 +358,7 @@ public class ARTGuidance implements Guidance {
      * @param sourceOfRandomness      a pseudo-random number generator
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, Long trials, File outputDirectory, File seedInputDir, Random sourceOfRandomness) throws IOException {
+    public RankGuidance(String testName, Duration duration, Long trials, File outputDirectory, File seedInputDir, Random sourceOfRandomness) throws IOException {
         this(testName, duration, trials, outputDirectory, IOUtils.resolveInputFileOrDirectory(seedInputDir), sourceOfRandomness);
     }
 
@@ -376,7 +373,7 @@ public class ARTGuidance implements Guidance {
      * @param seedInputDir the directory containing one or more input files to be used as initial inputs
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, File outputDirectory, File seedInputDir) throws IOException {
+    public RankGuidance(String testName, Duration duration, File outputDirectory, File seedInputDir) throws IOException {
         this(testName, duration, null, outputDirectory, seedInputDir, new Random());
     }
 
@@ -390,7 +387,7 @@ public class ARTGuidance implements Guidance {
      * @param outputDirectory the directory where fuzzing results will be written
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, File outputDirectory) throws IOException {
+    public RankGuidance(String testName, Duration duration, File outputDirectory) throws IOException {
         this(testName, duration, null, outputDirectory, new Random());
     }
 
@@ -404,7 +401,7 @@ public class ARTGuidance implements Guidance {
      * @param outputDirectory the directory where fuzzing results will be written
      * @throws IOException if the output directory could not be prepared
      */
-    public ARTGuidance(String testName, Duration duration, File outputDirectory, File[] seedFiles) throws IOException {
+    public RankGuidance(String testName, Duration duration, File outputDirectory, File[] seedFiles) throws IOException {
         this(testName, duration, null, outputDirectory, seedFiles, new Random());
     }
 
@@ -581,7 +578,7 @@ public class ARTGuidance implements Guidance {
                 console.printf("Total coverage:       %,d branches (%.2f%% of map)\n", nonZeroCount, nonZeroFraction);
                 console.printf("Valid coverage:       %,d branches (%.2f%% of map)\n", nonZeroValidCount, nonZeroValidFraction);
                 console.printf("EOF counts:           %,d\n", EOFcount);
-                console.printf("ART GetTime:          %f\n", secondsGetARTInput);
+                console.printf("ART GetTime:          %f\n", lastRankingTime);
                 console.printf("JVM Total Memory:     %,f\n", (Runtime.getRuntime().totalMemory()) / (1024.0 * 1024));
                 console.printf("JVM Max Memory:       %,f\n", (Runtime.getRuntime().maxMemory()) / (1024.0 * 1024));
                 console.printf("JVM Free Memory:      %,f\n", (Runtime.getRuntime().freeMemory()) / (1024.0 * 1024));
@@ -707,20 +704,24 @@ public class ARTGuidance implements Guidance {
         };
     }
 
-    public int calDistance(ArrayList<Integer> a, ArrayList<Integer> b) {
-        // calculate hamming distance from a to b
-        int minLen = Math.min(a.size(), b.size());
+    public int calDistance(Input a, Input b) {
+        // hamming distance from a to b
         int distance = 0;
-
-        for (int i = 0; i < minLen; i++) {
-            distance += Integer.bitCount(a.get(i) ^ b.get(i));
+        IntHashSet tempSet = new IntHashSet();
+        IntList nonZeroKeys1 = a.coverage.getCounter().getNonZeroIndices();
+        IntList nonZeroKeys2 = b.coverage.getCounter().getNonZeroIndices();
+        tempSet.addAll(nonZeroKeys1);
+        IntIterator iter = nonZeroKeys2.intIterator();
+        while(iter.hasNext()){
+            int idx = iter.next();
+            if (tempSet.contains(idx)) {
+                distance--;
+            } else {
+                distance++;
+            }
         }
 
-        if (a.size() != b.size()) {
-            distance += Math.abs(a.size() - b.size()) * 32;
-        }
-
-        return distance;
+        return tempSet.size() + distance;
     }
 
     @Override
@@ -728,98 +729,80 @@ public class ARTGuidance implements Guidance {
         EOFcount++;
     }
 
-    @Override
-    public Object[] getARTInput(List<Generator<?>> generators) throws GuidanceException {
+    public void rankingSeeds() {
         long currentTime = System.currentTimeMillis();
 
-        conditionallySynchronize(multiThreaded, () -> {
-            // Clear coverage stats for this run
-            runCoverage.clear();
-        });
-
-        Object[] args = {};
-
-        if (executedInputs.isEmpty()) {
-            // no input executed, choose a random one
-            int genCount = 0;
-            Object[] currArgs = {};
-            while (genCount < 1) {
-                currentInput = createFreshInput();
-                StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
-                SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
-                GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
-                try {
-                    currArgs = generators.stream()
-                            .map(g -> g.generate(randomSource, genStatus))
-                            .toArray();
-                } catch (IllegalStateException e) {
-                    if (e.getCause() instanceof EOFException) {
-                        // This happens when we reach EOF before reading all the random values.
-                        // The only thing we can do is try again
-                        EOFcount++;
-                        continue;
-                    } else {
-                        throw e;
-                    }
-                }
-                genCount++;
-                args = currArgs;
-            }
-        } else {
-            // generate FSCS_K random inputs
-            int genCount = 0;
-            LinearInput selectedInput = null;
-            int maxShortestDistance = -1;
-            Object[] currArgs = {};
-            while (genCount < FSCS_K) {
-                currentInput = createFreshInput();
-                StreamBackedRandom randomFile = new StreamBackedRandom(createParameterStream(), Long.BYTES);
-                SourceOfRandomness randomSource = new FastSourceOfRandomness(randomFile);
-                GenerationStatus genStatus = new NonTrackingGenerationStatus(randomSource);
-                try {
-                    currArgs = generators.stream()
-                            .map(g -> g.generate(randomSource, genStatus))
-                            .toArray();
-                } catch (IllegalStateException e) {
-                    if (e.getCause() instanceof EOFException) {
-                        // This happens when we reach EOF before reading all the random values.
-                        // The only thing we can do is try again
-                        EOFcount++;
-                        continue;
-                    } else {
-                        throw e;
-                    }
-                }
-
-                genCount++;
-
-                int minDistance = Integer.MAX_VALUE;
-                if (EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE == 0) {
-                    // calculate distance with all executed inputs
-                    for (LinearInput executedInput : executedInputs) {
-                        minDistance = Math.min(minDistance, calDistance(((LinearInput) currentInput).values, executedInput.values));
-                    }
-                } else {
-                    // ignore the first part
-                    int numOfLastExecutedInputs = (int) (executedInputs.size() * ((100 - EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE) * 1.0 / 100.0));
-                    for (int i = 0; i < numOfLastExecutedInputs && i < executedInputs.size(); i++) {
-                        minDistance = Math.min(minDistance,calDistance(((LinearInput) currentInput).values, executedInputs.get(executedInputs.size() - i - 1).values));
-                    }
-                }
-                if (minDistance > maxShortestDistance) {
-                    selectedInput = (LinearInput) currentInput;
-                    args = currArgs;
-                    maxShortestDistance = minDistance;
-                }
+        // update the distance measures to seeds
+        for (int i=0; i<newSeedsFromCurrentParent.size(); i++) {
+            Input newSeed = newSeedsFromCurrentParent.get(i);
+            // first, update the old seeds
+            for (Input oldSeed : savedInputs) {
+                int dis = calDistance(oldSeed, newSeed);
+                oldSeed.minToSeeds = Math.min(oldSeed.minToSeeds, dis);
+                newSeed.minToSeeds = Math.min(newSeed.minToSeeds, dis);
             }
 
-            currentInput = selectedInput;
+            // then, update the new seeds
+            for (int j=0; j<newSeedsFromCurrentParent.size(); j++) {
+                if (i==j) {
+                    continue;
+                }
+                Input anotherNewSeed = newSeedsFromCurrentParent.get(j);
+                int dis = calDistance(newSeed, anotherNewSeed);
+                newSeed.minToSeeds = Math.min(newSeed.minToSeeds, dis);
+                anotherNewSeed.minToSeeds = Math.min(anotherNewSeed.minToSeeds, dis);
+            }
         }
 
-        long elapsedTime = System.currentTimeMillis() - currentTime;
-        secondsGetARTInput = (elapsedTime * 1.0);
+        // update the distance measures to unique failures
+        for (Input uniqueFailure : newUniqueFailedInputs) {
+            // update the old seeds
+            for (Input oldSeed : savedInputs) {
+                oldSeed.minToSeeds = Math.min(oldSeed.minToSeeds, calDistance(oldSeed, uniqueFailure));
+            }
 
-        return args;
+            // then, update the new seeds
+            for (Input newSeed : newSeedsFromCurrentParent) {
+                newSeed.minToSeeds = Math.min(newSeed.minToSeeds, calDistance(newSeed, uniqueFailure));
+            }
+        }
+
+        // select the not chosen seed in this lifecycle that with maximum discrimination
+        savedInputs.addAll(newSeedsFromCurrentParent);
+        newSeedsFromCurrentParent.clear();
+        uniqueFailedInputs.addAll(newUniqueFailedInputs);
+        newUniqueFailedInputs.clear();
+
+        // the old seeds starts from 0 to startIndex (included)
+        int startIndex = currentParentInputIdx;
+        if (startIndex + 1 == savedInputs.size()) {
+            // we have to select the seed from all stored one
+            startIndex = 0;
+        } else {
+            // select the seed from startIndex to savedInputs.size()-1 (included)
+            startIndex++;
+        }
+
+        int selectedIndex = -1;
+        int currMaximumDis = Integer.MIN_VALUE;
+        for (int i = startIndex; i < savedInputs.size(); i++) {
+            Input currentSeed = savedInputs.get(i);
+//            int currentToSeedDis = currentSeed.minToSeeds != Integer.MAX_VALUE ? currentSeed.minToSeeds : 0;
+            int currentToSeedDis = currentSeed.minToSeeds;
+            int currentToUniqueFailedDis = - currentSeed.minToUniqueFailures != Integer.MAX_VALUE ? currentSeed.minToUniqueFailures : 0;
+            int dis = currentToSeedDis - (currentToUniqueFailedDis / TO_FAILED_DISTANCE_WEIGHT);
+            if (dis > currMaximumDis) {
+                currMaximumDis = dis;
+                selectedIndex = i;
+            }
+        }
+
+        Input selectedSeed = savedInputs.get(selectedIndex);
+        savedInputs.remove(selectedIndex);
+        savedInputs.add(startIndex, selectedSeed);
+
+        long elapsedTime = System.currentTimeMillis() - currentTime;
+        lastRankingTime = (elapsedTime * 1.0) / 1000.0;
     }
 
     @Override
@@ -851,6 +834,9 @@ public class ARTGuidance implements Guidance {
                 Input currentParentInput = savedInputs.get(currentParentInputIdx);
                 int targetNumChildren = getTargetChildrenForParent(currentParentInput);
                 if (numChildrenGeneratedForCurrentParentInput >= targetNumChildren) {
+                    // Ranking the pending seeds (including the old and new ones).
+                    rankingSeeds();
+
                     // Select the next saved input to fuzz
                     currentParentInputIdx = (currentParentInputIdx + 1) % savedInputs.size();
 
@@ -882,6 +868,67 @@ public class ARTGuidance implements Guidance {
 
         return createParameterStream();
     }
+
+//    @Override
+//    public InputStream getInput() throws GuidanceException {
+//        conditionallySynchronize(multiThreaded, () -> {
+//            // Clear coverage stats for this run
+//            runCoverage.clear();
+//
+//            // Choose an input to execute based on state of queues
+//            if (!seedInputs.isEmpty()) {
+//                // First, if we have some specific seeds, use those
+//                currentInput = seedInputs.removeFirst();
+//
+//                // Hopefully, the seeds will lead to new coverage and be added to saved inputs
+//
+//            } else if (savedInputs.isEmpty()) {
+//                // If no seeds given try to start with something random
+//                if (!blind && numTrials > 100_000) {
+//                    throw new GuidanceException("Too many trials without coverage; " +
+//                            "likely all assumption violations");
+//                }
+//
+//                // Make fresh input using either list or maps
+//                // infoLog("Spawning new input from thin air");
+//                currentInput = createFreshInput();
+//            } else {
+//                // The number of children to produce is determined by how much of the coverage
+//                // pool this parent input hits
+//                Input currentParentInput = savedInputs.get(currentParentInputIdx);
+//                int targetNumChildren = getTargetChildrenForParent(currentParentInput);
+//                if (numChildrenGeneratedForCurrentParentInput >= targetNumChildren) {
+//                    // Select the next saved input to fuzz
+//                    currentParentInputIdx = (currentParentInputIdx + 1) % savedInputs.size();
+//
+//                    // Count cycles
+//                    if (currentParentInputIdx == 0) {
+//                        completeCycle();
+//                    }
+//
+//                    numChildrenGeneratedForCurrentParentInput = 0;
+//                }
+//                Input parent = savedInputs.get(currentParentInputIdx);
+//
+//                // Fuzz it to get a new input
+//                // infoLog("Mutating input: %s", parent.desc);
+//                currentInput = parent.fuzz(random);
+//                numChildrenGeneratedForCurrentParentInput++;
+//
+//                // Write it to disk for debugging
+//                try {
+//                    writeCurrentInputToFile(currentInputFile);
+//                } catch (IOException ignore) {
+//                }
+//
+//                // Start time-counting for timeout handling
+//                this.runStart = new Date();
+//                this.branchCount = 0;
+//            }
+//        });
+//
+//        return createParameterStream();
+//    }
 
     @Override
     public boolean hasInput() {
@@ -917,10 +964,6 @@ public class ARTGuidance implements Guidance {
             }
 
             boolean save_cov_only = false;
-
-            if (blind) {
-                executedInputs.add((LinearInput) currentInput);
-            }
 
             if (result == Result.SUCCESS || (result == Result.INVALID && !SAVE_ONLY_VALID)) {
 
@@ -1011,6 +1054,11 @@ public class ARTGuidance implements Guidance {
                     if (LIBFUZZER_COMPAT_OUTPUT) {
                         displayStats(false);
                     }
+
+                    currentInput.coverage = runCoverage.copy();
+
+                    // add to unique failures
+                    newUniqueFailedInputs.add(currentInput);
                 }
             }
 
@@ -1177,8 +1225,12 @@ public class ARTGuidance implements Guidance {
             return;
         }
 
-        // Second, save to queue
-        savedInputs.add(currentInput);
+        // Second, save to queue (change: save to pending queue)
+        if (savedInputs.isEmpty()) {
+            savedInputs.add(currentInput);
+        } else {
+            newSeedsFromCurrentParent.add(currentInput);
+        }
 
         // Third, store basic book-keeping data
         currentInput.id = newInputIdx;
@@ -1290,6 +1342,12 @@ public class ARTGuidance implements Guidance {
      * A candidate or saved test input that maps objects of type K to bytes.
      */
     public static abstract class Input<K> implements Iterable<Integer> {
+
+        /** Minimum distance to existing seeds. **/
+        int minToSeeds = Integer.MAX_VALUE;
+
+        /** Minimum distance to existing unique failures. **/
+        int minToUniqueFailures = Integer.MAX_VALUE;
 
         /**
          * The file where this input is saved.

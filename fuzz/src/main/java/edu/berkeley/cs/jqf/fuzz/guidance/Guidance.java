@@ -234,5 +234,7 @@ public interface Guidance {
 
     default Object[] getARTInput(List<Generator<?>> generators) throws IllegalStateException, GuidanceException { return null; }
 
+    default InputStream getARTFUZZInput(List<Generator<?>> generators) throws IllegalStateException, GuidanceException { return null; }
+
     default void EOFcount() { return; }
 }
