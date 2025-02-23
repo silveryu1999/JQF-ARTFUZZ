@@ -578,7 +578,7 @@ public class RankGuidance implements Guidance {
                 console.printf("Total coverage:       %,d branches (%.2f%% of map)\n", nonZeroCount, nonZeroFraction);
                 console.printf("Valid coverage:       %,d branches (%.2f%% of map)\n", nonZeroValidCount, nonZeroValidFraction);
                 console.printf("EOF counts:           %,d\n", EOFcount);
-                console.printf("ART GetTime:          %f\n", lastRankingTime);
+                console.printf("Last Ranking Time:    %f\n", lastRankingTime);
                 console.printf("JVM Total Memory:     %,f\n", (Runtime.getRuntime().totalMemory()) / (1024.0 * 1024));
                 console.printf("JVM Max Memory:       %,f\n", (Runtime.getRuntime().maxMemory()) / (1024.0 * 1024));
                 console.printf("JVM Free Memory:      %,f\n", (Runtime.getRuntime().freeMemory()) / (1024.0 * 1024));
