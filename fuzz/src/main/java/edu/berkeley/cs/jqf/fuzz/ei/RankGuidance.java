@@ -1620,12 +1620,26 @@ public class RankGuidance implements Guidance {
                 for (int mutation = 1; mutation <= numMutations; mutation++) {
                     double mutatorSample = random.nextDouble();
                     int mutatorSelected;
-                    if (mutatorSample < 0.3) {
+//                    if (mutatorSample < 0.3) {
+//                        mutatorSelected = 1;
+//                    } else if (mutatorSample < 0.6) {
+//                        mutatorSelected = 2;
+//                    } else if (mutatorSample < 0.9) {
+//                        mutatorSelected = 3;
+//                    } else {
+//                        if (!isCrossovered && savedInputs.size() > 1) {
+//                            mutatorSelected = 4;
+//                        } else {
+//                            // resample
+//                            mutation--;
+//                            continue;
+//                        }
+//                    }
+
+                    if (mutatorSample < 0.45) {
                         mutatorSelected = 1;
-                    } else if (mutatorSample < 0.6) {
-                        mutatorSelected = 2;
                     } else if (mutatorSample < 0.9) {
-                        mutatorSelected = 3;
+                        mutatorSelected = 2;
                     } else {
                         if (!isCrossovered && savedInputs.size() > 1) {
                             mutatorSelected = 4;
@@ -1641,14 +1655,14 @@ public class RankGuidance implements Guidance {
                         int addOffset = random.nextInt(newInput.values.size());
                         int addSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), MAX_INPUT_SIZE - newInput.values.size());
                         int dupOffset = -1;
-                        if (mutatorSample >= 0.15) {
+                        if (mutatorSample >= 0.3) {
                             dupOffset = random.nextInt(newInput.values.size() - addSize);
                         }
 
                         ArrayList<Integer> content = new ArrayList<>();
 
                         for (int i=addOffset; i<addOffset+addSize; i++) {
-                            if (mutatorSample >= 0.15) {
+                            if (mutatorSample >= 0.3) {
                                 // add by duplicated
                                 if (dupOffset + i - addOffset < newInput.values.size()) {
                                     content.add(newInput.values.get(dupOffset + i - addOffset));
@@ -1677,14 +1691,14 @@ public class RankGuidance implements Guidance {
                         int sampleSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
                         int modifySize = Math.min(sampleSize, newInput.values.size() - modifyOffset);
                         int dupOffset = -1;
-                        if (mutatorSample >= 0.45) {
+                        if (mutatorSample >= 0.75) {
                             dupOffset = random.nextInt(newInput.values.size() - modifySize);
                         }
 
                         ArrayList<Integer> content = new ArrayList<>();
 
                         for (int i=modifyOffset; i<modifyOffset+modifySize; i++) {
-                            if (mutatorSample >= 0.45) {
+                            if (mutatorSample >= 0.75) {
                                 // modify by duplicated
                                 if (dupOffset + i - modifyOffset < newInput.values.size()) {
                                     content.add(newInput.values.get(dupOffset + i - modifyOffset));
