@@ -257,8 +257,8 @@ public class RankGuidance implements Guidance {
     /** Set of new seeds (produced by current parent input). */
     protected ArrayList<Input> newSeedsFromCurrentParent = new ArrayList<>();
 
-    /** Weight of to failure distance. */
-    protected final int TO_FAILED_DISTANCE_WEIGHT = Integer.getInteger("jqf.ei.TO_FAILED_DISTANCE_WEIGHT", 10);
+//    /** Weight of to failure distance. */
+//    protected final int TO_FAILED_DISTANCE_WEIGHT = Integer.getInteger("jqf.ei.TO_FAILED_DISTANCE_WEIGHT", 10);
 
     /** Set of executed unique failed inputs. */
     protected ArrayList<Input> uniqueFailedInputs = new ArrayList<>();
@@ -266,8 +266,18 @@ public class RankGuidance implements Guidance {
     /** Set of new unique failed inputs. */
     protected ArrayList<Input> newUniqueFailedInputs = new ArrayList<>();
 
-    /** Seconds for getARTInput() **/
+    /** Seconds for ranking seeds **/
     protected double lastRankingTime = 0.0;
+
+    /** Seconds for mutate seed **/
+    protected double lastMutateTime = 0.0;
+
+    /** Weight of failure distance **/
+    /** from 0 to 100 ()**/
+    protected final int WEIGHT_OF_TO_FAILURE_DISTANCE = Integer.getInteger("jqf.ei.WEIGHT_OF_TO_FAILURE_DISTANCE", 0);
+
+    /** Whether to use custom mutation. */
+    protected final boolean CUSTOM_MUTATION = Boolean.getBoolean("jqf.ei.CUSTOM_MUTATION");
 
     /**
      * Creates a new Zest guidance instance with optional duration,
@@ -579,6 +589,7 @@ public class RankGuidance implements Guidance {
                 console.printf("Valid coverage:       %,d branches (%.2f%% of map)\n", nonZeroValidCount, nonZeroValidFraction);
                 console.printf("EOF counts:           %,d\n", EOFcount);
                 console.printf("Last Ranking Time:    %f\n", lastRankingTime);
+                console.printf("Last Mutation Time:   %f\n", lastMutateTime);
                 console.printf("JVM Total Memory:     %,f\n", (Runtime.getRuntime().totalMemory()) / (1024.0 * 1024));
                 console.printf("JVM Max Memory:       %,f\n", (Runtime.getRuntime().maxMemory()) / (1024.0 * 1024));
                 console.printf("JVM Free Memory:      %,f\n", (Runtime.getRuntime().freeMemory()) / (1024.0 * 1024));
@@ -789,8 +800,11 @@ public class RankGuidance implements Guidance {
             Input currentSeed = savedInputs.get(i);
 //            int currentToSeedDis = currentSeed.minToSeeds != Integer.MAX_VALUE ? currentSeed.minToSeeds : 0;
             int currentToSeedDis = currentSeed.minToSeeds;
-            int currentToUniqueFailedDis = - currentSeed.minToUniqueFailures != Integer.MAX_VALUE ? currentSeed.minToUniqueFailures : 0;
-            int dis = currentToSeedDis - (currentToUniqueFailedDis / TO_FAILED_DISTANCE_WEIGHT);
+            int currentToUniqueFailedDis = currentSeed.minToUniqueFailures != Integer.MAX_VALUE ? currentSeed.minToUniqueFailures : 0;
+
+            int dis = (int) (((100 - WEIGHT_OF_TO_FAILURE_DISTANCE) * 1.0 / 100.0) * currentToSeedDis) + (int) ((WEIGHT_OF_TO_FAILURE_DISTANCE * 1.0 / 100.0) * currentToUniqueFailedDis);
+
+//            int dis = currentToSeedDis - (currentToUniqueFailedDis / TO_FAILED_DISTANCE_WEIGHT);
             if (dis > currMaximumDis) {
                 currMaximumDis = dis;
                 selectedIndex = i;
@@ -851,7 +865,12 @@ public class RankGuidance implements Guidance {
 
                 // Fuzz it to get a new input
                 // infoLog("Mutating input: %s", parent.desc);
+                long currentTime = System.currentTimeMillis();
                 currentInput = parent.fuzz(random);
+                long elapsedTime = System.currentTimeMillis() - currentTime;
+//                lastMutateTime = (elapsedTime * 1.0) / 1000.0;
+                lastMutateTime = (elapsedTime * 1.0);
+
                 numChildrenGeneratedForCurrentParentInput++;
 
                 // Write it to disk for debugging
@@ -1554,30 +1573,197 @@ public class RankGuidance implements Guidance {
             // Clone this input to create initial version of new child
             LinearInput newInput = new LinearInput(this);
 
-            // Stack a bunch of mutations
-            int numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT);
-            newInput.desc += ",havoc:"+numMutations;
+            if (!CUSTOM_MUTATION) {
+                // Stack a bunch of mutations
+                int numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT);
+                newInput.desc += ",havoc:"+numMutations;
 
-            boolean setToZero = random.nextDouble() < MUTATION_ZERO_PROBABILITY; // one out of 10 times
+                boolean setToZero = random.nextDouble() < MUTATION_ZERO_PROBABILITY; // one out of 10 times
 
-            for (int mutation = 1; mutation <= numMutations; mutation++) {
+                for (int mutation = 1; mutation <= numMutations; mutation++) {
 
-                // Select a random offset and size
-                int offset = random.nextInt(newInput.values.size());
-                int mutationSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
+                    // Select a random offset and size
+                    int offset = random.nextInt(newInput.values.size());
+                    int mutationSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
 
-                // desc += String.format(":%d@%d", mutationSize, idx);
+                    // desc += String.format(":%d@%d", mutationSize, idx);
 
-                // Mutate a contiguous set of bytes from offset
-                for (int i = offset; i < offset + mutationSize; i++) {
-                    // Don't go past end of list
-                    if (i >= newInput.values.size()) {
-                        break;
+                    // Mutate a contiguous set of bytes from offset
+                    for (int i = offset; i < offset + mutationSize; i++) {
+                        // Don't go past end of list
+                        if (i >= newInput.values.size()) {
+                            break;
+                        }
+
+                        // Otherwise, apply a random mutation
+                        int mutatedValue = setToZero ? 0 : random.nextInt(256);
+                        newInput.values.set(i, mutatedValue);
+                    }
+                }
+            } else {
+                // custom mutations
+                // 1: add (random length at random offset)
+                //    content: random, duplicated, set as 0 or 1
+                // 2: modify (random length at random offset)
+                //    content: random, duplicated, set as 0 or 1
+                // 3: delete (random length at random offset)
+                //    content: no
+                // 4: crossover (cross with another seed)
+                //    content: first half or second half
+
+                boolean isCrossovered = false;
+
+                // Stack a bunch of mutations
+                int numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT);
+                newInput.desc += ",havoc:"+numMutations;
+
+                for (int mutation = 1; mutation <= numMutations; mutation++) {
+                    double mutatorSample = random.nextDouble();
+                    int mutatorSelected;
+                    if (mutatorSample < 0.3) {
+                        mutatorSelected = 1;
+                    } else if (mutatorSample < 0.6) {
+                        mutatorSelected = 2;
+                    } else if (mutatorSample < 0.9) {
+                        mutatorSelected = 3;
+                    } else {
+                        if (!isCrossovered && savedInputs.size() > 1) {
+                            mutatorSelected = 4;
+                        } else {
+                            // resample
+                            mutation--;
+                            continue;
+                        }
                     }
 
-                    // Otherwise, apply a random mutation
-                    int mutatedValue = setToZero ? 0 : random.nextInt(256);
-                    newInput.values.set(i, mutatedValue);
+                    if (mutatorSelected == 1) {
+                        // add
+                        int addOffset = random.nextInt(newInput.values.size());
+                        int addSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), MAX_INPUT_SIZE - newInput.values.size());
+                        int dupOffset = -1;
+                        if (mutatorSample >= 0.15) {
+                            dupOffset = random.nextInt(newInput.values.size() - addSize);
+                        }
+
+                        ArrayList<Integer> content = new ArrayList<>();
+
+                        for (int i=addOffset; i<addOffset+addSize; i++) {
+                            if (mutatorSample >= 0.15) {
+                                // add by duplicated
+                                if (dupOffset + i - addOffset < newInput.values.size()) {
+                                    content.add(newInput.values.get(dupOffset + i - addOffset));
+                                } else {
+                                    // add by random
+                                    double sampleZeroOrOne = random.nextDouble();
+                                    int addValue = sampleZeroOrOne < 0.1 ? (sampleZeroOrOne < 0.05 ? 0 : 256) : random.nextInt(256);
+                                    content.add(addValue);
+                                }
+                            } else {
+                                // add by random
+                                double sampleZeroOrOne = random.nextDouble();
+                                int addValue = sampleZeroOrOne < 0.1 ? (sampleZeroOrOne < 0.05 ? 0 : 256) : random.nextInt(256);
+                                content.add(addValue);
+                            }
+                        }
+
+                        for (int value : content) {
+                            newInput.values.add(addOffset, value);
+                        }
+
+                        content.clear();
+                    } else if (mutatorSelected == 2) {
+                        // modify
+                        int modifyOffset = random.nextInt(newInput.values.size());
+                        int sampleSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
+                        int modifySize = Math.min(sampleSize, newInput.values.size() - modifyOffset);
+                        int dupOffset = -1;
+                        if (mutatorSample >= 0.45) {
+                            dupOffset = random.nextInt(newInput.values.size() - modifySize);
+                        }
+
+                        ArrayList<Integer> content = new ArrayList<>();
+
+                        for (int i=modifyOffset; i<modifyOffset+modifySize; i++) {
+                            if (mutatorSample >= 0.45) {
+                                // modify by duplicated
+                                if (dupOffset + i - modifyOffset < newInput.values.size()) {
+                                    content.add(newInput.values.get(dupOffset + i - modifyOffset));
+                                } else {
+                                    // modify by random
+                                    double sampleZeroOrOne = random.nextDouble();
+                                    int addValue = sampleZeroOrOne < 0.1 ? (sampleZeroOrOne < 0.05 ? 0 : 256) : random.nextInt(256);
+                                    content.add(addValue);
+                                }
+                            } else {
+                                // modify by random
+                                double sampleZeroOrOne = random.nextDouble();
+                                int addValue = sampleZeroOrOne < 0.1 ? (sampleZeroOrOne < 0.05 ? 0 : 256) : random.nextInt(256);
+                                content.add(addValue);
+                            }
+                        }
+
+                        for (int i=modifyOffset; i<modifyOffset+modifySize; i++) {
+                            newInput.values.set(i, content.get(i-modifyOffset));
+                        }
+
+                        content.clear();
+                    } else if (mutatorSelected == 3) {
+                        // delete
+                        int deleteOffset = random.nextInt(newInput.values.size());
+                        int sampleSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
+                        int deleteSize = Math.min(sampleSize, newInput.values.size() - deleteOffset);
+                        boolean zeroInsteadOfDelete = random.nextDouble() < 0.1;
+                        if (zeroInsteadOfDelete) {
+                            for (int i=deleteOffset; i<deleteOffset+deleteSize; i++) {
+                                newInput.values.set(i, 0);
+                            }
+                        } else {
+                            for (int i=deleteOffset; i<deleteOffset+deleteSize; i++) {
+                                newInput.values.remove(deleteOffset);
+                            }
+                        }
+                    } else {
+                        // crossover
+                        int anotherSeedIndex = -1;
+                        while (anotherSeedIndex == -1 || anotherSeedIndex == currentParentInputIdx) {
+                            anotherSeedIndex = random.nextInt(savedInputs.size());
+                        }
+
+                        LinearInput anotherSeed = (LinearInput) savedInputs.get(anotherSeedIndex);
+                        double std1 = (double) newInput.values.size() / 6.0;
+                        double mean1 = (double) newInput.values.size() / 2.0;
+                        double std2 = (double) anotherSeed.values.size() / 6.0;
+                        double mean2 = (double) anotherSeed.values.size() / 2.0;
+                        int mid1 = (int) Math.round(std1 * random.nextGaussian() + mean1);
+                        int mid2 = (int) Math.round(std2 * random.nextGaussian() + mean2);
+                        mid1 = mid1 < 0 ? 0 : Math.min(mid1, (newInput.values.size() - 1));
+                        mid2 = mid2 < 0 ? 0 : Math.min(mid2, (newInput.values.size() - 1));
+
+                        ArrayList<Integer> content = new ArrayList<>();
+
+                        boolean currentIsFirstHalf = random.nextBoolean();
+                        if (currentIsFirstHalf) {
+                            for (int i=0; i<mid1; i++) {
+                                content.add(newInput.values.get(i));
+                            }
+                            for (int i=mid2; i<anotherSeed.values.size(); i++) {
+                                content.add(anotherSeed.values.get(i));
+                            }
+                            newInput.values.clear();
+                            newInput.values.addAll(content);
+                        } else {
+                            for (int i=0; i<mid2; i++) {
+                                content.add(anotherSeed.values.get(i));
+                            }
+                            for (int i=mid1; i<newInput.values.size(); i++) {
+                                content.add(newInput.values.get(i));
+                            }
+                            newInput.values.clear();
+                            newInput.values.addAll(content);
+                        }
+
+                        content.clear();
+                    }
                 }
             }
 

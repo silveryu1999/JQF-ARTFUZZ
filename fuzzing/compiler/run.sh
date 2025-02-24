@@ -6,11 +6,14 @@ scripts=(
 # "run-art.sh"
 # "run-random.sh"
 # "run-zest.sh"
-"run-rank-1.sh"
-"run-rank-2.sh"
-"run-rank-3.sh"
-"run-rank-5.sh"
-"run-rank-10.sh"
+"run-rank-0.sh"
+"run-rank-cm-0.sh"
+"run-rank-25.sh"
+"run-rank-cm-25.sh"
+"run-rank-50.sh"
+"run-rank-cm-50.sh"
+"run-rank-75.sh"
+"run-rank-cm-75.sh"
 )
 
 for script in "${scripts[@]}"; do
