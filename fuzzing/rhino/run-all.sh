@@ -2,8 +2,8 @@
 
 scripts=(
 #"run-art.sh"
-#"run-random.sh"
-#"run-zest.sh"
+"run-random.sh"
+"run-zest.sh"
 "run-rank-0.sh"
 "run-rank-cm-0.sh"
 "run-rank-25.sh"

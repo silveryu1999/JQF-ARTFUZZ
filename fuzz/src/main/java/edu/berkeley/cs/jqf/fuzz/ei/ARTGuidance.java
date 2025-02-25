@@ -262,6 +262,9 @@ public class ARTGuidance implements Guidance {
     /** Set of executed inputs in ART. */
     protected ArrayList<LinearInput> executedInputs = new ArrayList<>();
 
+    /** Flag of get ART Input **/
+    protected final boolean GET_ART_INPUT = Boolean.getBoolean("jqf.getARTInput");
+
     /** Number of last executed inputs to calculate ART **/
     /** from 0 to 99 (first 0% - 99% to be ignored)**/
     protected final int EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE = Integer.getInteger("jqf.ei.EXECUTED_INPUTS_TO_BE_IGNORE_PERCENTAGE", 0);
@@ -837,7 +840,7 @@ public class ARTGuidance implements Guidance {
 
             } else if (savedInputs.isEmpty()) {
                 // If no seeds given try to start with something random
-                if (!blind && numTrials > 100_000) {
+                if (!blind && numTrials > 100_000_000) {
                     throw new GuidanceException("Too many trials without coverage; " +
                             "likely all assumption violations");
                 }
@@ -918,7 +921,7 @@ public class ARTGuidance implements Guidance {
 
             boolean save_cov_only = false;
 
-            if (blind) {
+            if (blind && GET_ART_INPUT) {
                 executedInputs.add((LinearInput) currentInput);
             }
 
