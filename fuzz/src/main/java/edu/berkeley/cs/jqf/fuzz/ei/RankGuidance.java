@@ -769,19 +769,19 @@ public class RankGuidance implements Guidance {
         for (Input uniqueFailure : newUniqueFailedInputs) {
             // update the old seeds
             for (Input oldSeed : savedInputs) {
-                oldSeed.minToSeeds = Math.min(oldSeed.minToSeeds, calDistance(oldSeed, uniqueFailure));
+                oldSeed.minToUniqueFailures = Math.min(oldSeed.minToUniqueFailures, calDistance(oldSeed, uniqueFailure));
             }
 
             // then, update the new seeds
             for (Input newSeed : newSeedsFromCurrentParent) {
-                newSeed.minToSeeds = Math.min(newSeed.minToSeeds, calDistance(newSeed, uniqueFailure));
+                newSeed.minToUniqueFailures = Math.min(newSeed.minToUniqueFailures, calDistance(newSeed, uniqueFailure));
             }
         }
 
         // select the not chosen seed in this lifecycle that with maximum discrimination
         savedInputs.addAll(newSeedsFromCurrentParent);
         newSeedsFromCurrentParent.clear();
-        uniqueFailedInputs.addAll(newUniqueFailedInputs);
+//        uniqueFailedInputs.addAll(newUniqueFailedInputs);
         newUniqueFailedInputs.clear();
 
         // the old seeds starts from 0 to startIndex (included)
@@ -1601,182 +1601,137 @@ public class RankGuidance implements Guidance {
                     }
                 }
             } else {
-                // custom mutations
-                // 1: add (random length at random offset)
-                //    content: random, duplicated, set as 0 or 1
-                // 2: modify (random length at random offset)
-                //    content: random, duplicated, set as 0 or 1
-                // 3: delete (random length at random offset)
-                //    content: no
-                // 4: crossover (cross with another seed)
-                //    content: first half or second half
-
-                boolean isCrossovered = false;
-
                 // Stack a bunch of mutations
                 int numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT);
                 newInput.desc += ",havoc:"+numMutations;
 
+                // one out of 10 times start with a crossover
+                boolean isCrossovered = random.nextDouble() < 0.1;
+                if (isCrossovered) {
+                    // crossover
+                    int anotherSeedIndex = -1;
+                    while (anotherSeedIndex == -1 || anotherSeedIndex == currentParentInputIdx) {
+                        anotherSeedIndex = random.nextInt(savedInputs.size());
+                    }
+
+                    LinearInput anotherSeed = (LinearInput) savedInputs.get(anotherSeedIndex);
+                    double std1 = (double) newInput.values.size() / 6.0;
+                    double mean1 = (double) newInput.values.size() / 2.0;
+                    double std2 = (double) anotherSeed.values.size() / 6.0;
+                    double mean2 = (double) anotherSeed.values.size() / 2.0;
+                    int mid1 = (int) Math.round(std1 * random.nextGaussian() + mean1);
+                    int mid2 = (int) Math.round(std2 * random.nextGaussian() + mean2);
+                    mid1 = mid1 < 0 ? 0 : Math.min(mid1, (newInput.values.size() - 1));
+                    mid2 = mid2 < 0 ? 0 : Math.min(mid2, (newInput.values.size() - 1));
+
+                    ArrayList<Integer> content = new ArrayList<>();
+
+                    boolean currentIsFirstHalf = random.nextBoolean();
+                    if (currentIsFirstHalf) {
+                        for (int i=0; i<mid1; i++) {
+                            content.add(newInput.values.get(i));
+                        }
+                        for (int i=mid2; i<anotherSeed.values.size(); i++) {
+                            content.add(anotherSeed.values.get(i));
+                        }
+                        newInput.values.clear();
+                        newInput.values.addAll(content);
+                    } else {
+                        for (int i=0; i<mid2; i++) {
+                            content.add(anotherSeed.values.get(i));
+                        }
+                        for (int i=mid1; i<newInput.values.size(); i++) {
+                            content.add(newInput.values.get(i));
+                        }
+                        newInput.values.clear();
+                        newInput.values.addAll(content);
+                    }
+
+                    content.clear();
+                    numMutations--;
+                }
+
+                // three mutators:
+                // 1, add random content (low probability set to 0 or 1)
+                // 2, dup existing content
+                // 3, delete existing content
+                // 4, modify random content (low probability set to 0 or 1)
+
                 for (int mutation = 1; mutation <= numMutations; mutation++) {
                     double mutatorSample = random.nextDouble();
                     int mutatorSelected;
-//                    if (mutatorSample < 0.3) {
-//                        mutatorSelected = 1;
-//                    } else if (mutatorSample < 0.6) {
-//                        mutatorSelected = 2;
-//                    } else if (mutatorSample < 0.9) {
-//                        mutatorSelected = 3;
-//                    } else {
-//                        if (!isCrossovered && savedInputs.size() > 1) {
-//                            mutatorSelected = 4;
-//                        } else {
-//                            // resample
-//                            mutation--;
-//                            continue;
-//                        }
-//                    }
-
-                    if (mutatorSample < 0.45) {
+                    if (mutatorSample < 0.3) {
+                        // add
                         mutatorSelected = 1;
-                    } else if (mutatorSample < 0.9) {
+                    } else if (mutatorSample < 0.4) {
+                        // dup
                         mutatorSelected = 2;
+                    } else if (mutatorSample < 0.5) {
+                        // delete
+                        mutatorSelected = 3;
                     } else {
-                        if (!isCrossovered && savedInputs.size() > 1) {
-                            mutatorSelected = 4;
-                        } else {
-                            // resample
-                            mutation--;
-                            continue;
-                        }
+                        // modify
+                        mutatorSelected = 4;
                     }
 
                     if (mutatorSelected == 1) {
                         // add
+                        double zeroOneSample = random.nextDouble();
+                        boolean setToZeroOrOne = zeroOneSample < 0.1;
+                        boolean setToZero = zeroOneSample < 0.05;
+
                         int addOffset = random.nextInt(newInput.values.size());
                         int addSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), MAX_INPUT_SIZE - newInput.values.size());
-                        int dupOffset = -1;
-                        if (mutatorSample >= 0.3) {
-                            dupOffset = random.nextInt(newInput.values.size() - addSize);
+
+                        for (int i = addOffset; i < addOffset + addSize; i++) {
+                            int addValue = setToZeroOrOne ? (setToZero ? 0 : 256) : random.nextInt(256);
+                            newInput.values.add(i, addValue);
                         }
-
-                        ArrayList<Integer> content = new ArrayList<>();
-
-                        for (int i=addOffset; i<addOffset+addSize; i++) {
-                            if (mutatorSample >= 0.3) {
-                                // add by duplicated
-                                if (dupOffset + i - addOffset < newInput.values.size()) {
-                                    content.add(newInput.values.get(dupOffset + i - addOffset));
-                                } else {
-                                    // add by random
-                                    double sampleZeroOrOne = random.nextDouble();
-                                    int addValue = sampleZeroOrOne < 0.1 ? (sampleZeroOrOne < 0.05 ? 0 : 256) : random.nextInt(256);
-                                    content.add(addValue);
-                                }
-                            } else {
-                                // add by random
-                                double sampleZeroOrOne = random.nextDouble();
-                                int addValue = sampleZeroOrOne < 0.1 ? (sampleZeroOrOne < 0.05 ? 0 : 256) : random.nextInt(256);
-                                content.add(addValue);
-                            }
-                        }
-
-                        for (int value : content) {
-                            newInput.values.add(addOffset, value);
-                        }
-
-                        content.clear();
                     } else if (mutatorSelected == 2) {
-                        // modify
-                        int modifyOffset = random.nextInt(newInput.values.size());
-                        int sampleSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
-                        int modifySize = Math.min(sampleSize, newInput.values.size() - modifyOffset);
-                        int dupOffset = -1;
-                        if (mutatorSample >= 0.75) {
-                            dupOffset = random.nextInt(newInput.values.size() - modifySize);
-                        }
+                        // dup
+                        int addOffset = random.nextInt(newInput.values.size());
+                        int addSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), MAX_INPUT_SIZE - newInput.values.size());
+                        int dupSize = Math.min(newInput.values.size(), addSize);
+                        int dupOffset = random.nextInt(newInput.values.size() - dupSize);
 
                         ArrayList<Integer> content = new ArrayList<>();
 
-                        for (int i=modifyOffset; i<modifyOffset+modifySize; i++) {
-                            if (mutatorSample >= 0.75) {
-                                // modify by duplicated
-                                if (dupOffset + i - modifyOffset < newInput.values.size()) {
-                                    content.add(newInput.values.get(dupOffset + i - modifyOffset));
-                                } else {
-                                    // modify by random
-                                    double sampleZeroOrOne = random.nextDouble();
-                                    int addValue = sampleZeroOrOne < 0.1 ? (sampleZeroOrOne < 0.05 ? 0 : 256) : random.nextInt(256);
-                                    content.add(addValue);
-                                }
-                            } else {
-                                // modify by random
-                                double sampleZeroOrOne = random.nextDouble();
-                                int addValue = sampleZeroOrOne < 0.1 ? (sampleZeroOrOne < 0.05 ? 0 : 256) : random.nextInt(256);
-                                content.add(addValue);
-                            }
+                        for (int i = dupOffset; i < dupOffset + dupSize; i++) {
+                            content.add(newInput.values.get(i));
                         }
 
-                        for (int i=modifyOffset; i<modifyOffset+modifySize; i++) {
-                            newInput.values.set(i, content.get(i-modifyOffset));
+                        for (int i = addOffset; i < addOffset + dupSize; i++) {
+                            newInput.values.add(i, content.get(i - addOffset));
                         }
 
                         content.clear();
                     } else if (mutatorSelected == 3) {
                         // delete
                         int deleteOffset = random.nextInt(newInput.values.size());
-                        int sampleSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
-                        int deleteSize = Math.min(sampleSize, newInput.values.size() - deleteOffset);
+                        int deleteSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), newInput.values.size() - deleteOffset);
                         boolean zeroInsteadOfDelete = random.nextDouble() < 0.1;
                         if (zeroInsteadOfDelete) {
-                            for (int i=deleteOffset; i<deleteOffset+deleteSize; i++) {
+                            for (int i = deleteOffset; i < deleteOffset + deleteSize; i++) {
                                 newInput.values.set(i, 0);
                             }
                         } else {
-                            for (int i=deleteOffset; i<deleteOffset+deleteSize; i++) {
+                            for (int i = deleteOffset; i < deleteOffset + deleteSize; i++) {
                                 newInput.values.remove(deleteOffset);
                             }
                         }
                     } else {
-                        // crossover
-                        int anotherSeedIndex = -1;
-                        while (anotherSeedIndex == -1 || anotherSeedIndex == currentParentInputIdx) {
-                            anotherSeedIndex = random.nextInt(savedInputs.size());
+                        // modify
+                        double zeroOneSample = random.nextDouble();
+                        boolean setToZeroOrOne = zeroOneSample < 0.1;
+                        boolean setToZero = zeroOneSample < 0.05;
+
+                        int modifyOffset = random.nextInt(newInput.values.size());
+                        int modifySize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), newInput.values.size() - modifyOffset);
+
+                        for (int i = modifyOffset; i < modifyOffset + modifySize; i++) {
+                            int modifyValue = setToZeroOrOne ? (setToZero ? 0 : 256) : random.nextInt(256);
+                            newInput.values.set(i, modifyValue);
                         }
-
-                        LinearInput anotherSeed = (LinearInput) savedInputs.get(anotherSeedIndex);
-                        double std1 = (double) newInput.values.size() / 6.0;
-                        double mean1 = (double) newInput.values.size() / 2.0;
-                        double std2 = (double) anotherSeed.values.size() / 6.0;
-                        double mean2 = (double) anotherSeed.values.size() / 2.0;
-                        int mid1 = (int) Math.round(std1 * random.nextGaussian() + mean1);
-                        int mid2 = (int) Math.round(std2 * random.nextGaussian() + mean2);
-                        mid1 = mid1 < 0 ? 0 : Math.min(mid1, (newInput.values.size() - 1));
-                        mid2 = mid2 < 0 ? 0 : Math.min(mid2, (newInput.values.size() - 1));
-
-                        ArrayList<Integer> content = new ArrayList<>();
-
-                        boolean currentIsFirstHalf = random.nextBoolean();
-                        if (currentIsFirstHalf) {
-                            for (int i=0; i<mid1; i++) {
-                                content.add(newInput.values.get(i));
-                            }
-                            for (int i=mid2; i<anotherSeed.values.size(); i++) {
-                                content.add(anotherSeed.values.get(i));
-                            }
-                            newInput.values.clear();
-                            newInput.values.addAll(content);
-                        } else {
-                            for (int i=0; i<mid2; i++) {
-                                content.add(anotherSeed.values.get(i));
-                            }
-                            for (int i=mid1; i<newInput.values.size(); i++) {
-                                content.add(newInput.values.get(i));
-                            }
-                            newInput.values.clear();
-                            newInput.values.addAll(content);
-                        }
-
-                        content.clear();
                     }
                 }
             }
