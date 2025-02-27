@@ -1,7 +1,6 @@
 #!/bin/bash
 
 scripts=(
-#"run-art.sh"
 "run-random.sh"
 "run-zest.sh"
 "run-rank-0.sh"

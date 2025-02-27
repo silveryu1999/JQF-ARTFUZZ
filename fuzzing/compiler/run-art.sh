@@ -8,4 +8,4 @@ export JVM_OPTS="$JVM_OPTS -Djqf.ei.TRIAL_LIMIT=100000"
 export JVM_OPTS="$JVM_OPTS -Djqf.ei.TIME_LIMIT=3h"
 export JVM_OPTS="$JVM_OPTS -Xmx40g"
 export JVM_OPTS="$JVM_OPTS -Djqf.ei.MAP_SIZE_POW=17"
-../../bin/jqf-art -c .:$(../../scripts/classpath.sh):closure-compiler-v20180204.jar:commons-io-2.18.0.jar -l -b CompilerTest testWithGenerator art/
+../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -l -b CompilerTest testWithGenerator art/
