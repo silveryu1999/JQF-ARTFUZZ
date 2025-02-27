@@ -1253,7 +1253,14 @@ public class RankGuidance implements Guidance {
         for (int i = startIndex; i < savedInputs.size(); i++) {
             Input currentSeed = savedInputs.get(i);
 
-            int dis = currentSeed.isValid() ? currentSeed.minToValidSeeds : currentSeed.minToSeeds;
+            int dis;
+            if (currentSeed.isValid()) {
+                dis = currentSeed.minToValidSeeds != Integer.MAX_VALUE ? currentSeed.minToValidSeeds : 1;
+            } else {
+                dis = currentSeed.minToSeeds != Integer.MAX_VALUE ? currentSeed.minToSeeds : 1;
+            }
+
+//            int dis = currentSeed.isValid() ? currentSeed.minToValidSeeds : currentSeed.minToSeeds;
 
             if (currentSeed.isValid()) {
                 if (dis > currMaximumDisValid) {
@@ -2098,30 +2105,39 @@ public class RankGuidance implements Guidance {
                 }
             } else {
                 // Stack a bunch of mutations
-                int numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT);
+
+                // for invalid inputs, mutate more times
+                // for valid inputs, do smaller changes
+                int numMutations;
+                if (this.isValid()) {
+                    numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT / 2);
+                } else {
+                    numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT);
+                }
+
+//                int numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT);
                 newInput.desc += ",havoc:"+numMutations;
 
-                // start with a crossover with another valid seed in a certain probability
+                // for valid input, start with a crossover with another valid seed in a certain probability
 //                if (currentParentInputIdx > 1)
 //                if (this.isValid() && savedValidInputs.size() > 1)
                 if (this.isValid() && savedValidInputs.size() > 1) {
                     boolean isCrossovered = random.nextDouble() < 0.25;
                     if (isCrossovered) {
-//                        int anotherValidSeedIndex = -1;
-//                        while (anotherValidSeedIndex == -1 || this == savedValidInputs.get(anotherValidSeedIndex)) {
-//                            anotherValidSeedIndex = random.nextInt(currentParentInputIdx);
-//                        }
-//                        int anotherValidSeedIndex = random.nextInt(currentParentInputIdx);
                         int anotherValidSeedIndex = -1;
-                        while (anotherValidSeedIndex == -1 || this == savedInputs.get(anotherValidSeedIndex) || !savedInputs.get(anotherValidSeedIndex).isValid()) {
-                            anotherValidSeedIndex = random.nextInt(currentParentInputIdx);
+                        while (anotherValidSeedIndex == -1 || this == savedValidInputs.get(anotherValidSeedIndex)) {
+                            anotherValidSeedIndex = random.nextInt(savedValidInputs.size());
                         }
 
+//                        while (anotherValidSeedIndex == -1 || this == savedInputs.get(anotherValidSeedIndex) || !savedInputs.get(anotherValidSeedIndex).isValid()) {
+//                            anotherValidSeedIndex = random.nextInt(currentParentInputIdx);
+//                        }
+
 //                        int anotherValidSeedIndex = random.nextInt(savedValidInputs.size());
-//                        LinearInput anotherValidSeed = (LinearInput) savedValidInputs.get(anotherValidSeedIndex);
+                        LinearInput anotherValidSeed = (LinearInput) savedValidInputs.get(anotherValidSeedIndex);
+//                        LinearInput anotherValidSeed = (LinearInput) savedInputs.get(anotherValidSeedIndex);
 
-                        LinearInput anotherValidSeed = (LinearInput) savedInputs.get(anotherValidSeedIndex);
-
+                        // randomly select a middle point
                         double std1 = (double) newInput.values.size() / 6.0;
                         double mean1 = (double) newInput.values.size() / 2.0;
                         double std2 = (double) anotherValidSeed.values.size() / 6.0;
@@ -2193,18 +2209,6 @@ public class RankGuidance implements Guidance {
                         newInput.values.set(i, mutatedValue);
                     }
                 }
-
-                // start with an extension in a certain probability
-                // extension: change the last part of bytes, so it may get longer in input generation
-//                if (random.nextDouble() < 0.1) {
-//                    int extendSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), newInput.values.size());
-//                    for (int i=newInput.values.size()-extendSize; i<newInput.values.size(); i++) {
-//                        int modifyValue = random.nextDouble() < 0.1 ? 0 : random.nextInt(256);
-//                        newInput.values.set(i, modifyValue);
-//                    }
-//                    // consume one mutation
-//                    numMutations--;
-//                }
 
                 // three mutators:
                 // 1, add random content (low probability set to 0 or 1)
