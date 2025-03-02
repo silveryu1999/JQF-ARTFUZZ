@@ -275,6 +275,9 @@ public class ARTGuidance implements Guidance {
     /** Seconds for getARTInput() **/
     protected double secondsGetARTInput = 0.0;
 
+    /** Whether to save input files **/
+    protected final boolean SAVE_INPUT_FILES = Boolean.getBoolean("jqf.ei.SAVE_INPUT_FILES");
+
     /**
      * Creates a new Zest guidance instance with optional duration,
      * optional trial limit, and possibly deterministic PRNG.
@@ -463,8 +466,8 @@ public class ARTGuidance implements Guidance {
     }
 
     protected String getStatNames() {
-        return "# unix_time, cycles_done, cur_path, paths_total, pending_total, " +
-            "pending_favs, map_size, unique_crashes, unique_hangs, max_depth, execs_per_sec, valid_inputs, invalid_inputs, valid_cov, all_covered_probes, valid_covered_probes";
+        return "# unix_time, cycles_done, cur_path, paths_total, " +
+                "map_size, unique_crashes, all_crashes, execs_per_sec, valid_inputs, invalid_inputs, valid_cov, all_covered_probes, valid_covered_probes";
     }
 
     protected String getStatCasesNames() {
@@ -591,9 +594,15 @@ public class ARTGuidance implements Guidance {
             }
         }
 
-        String plotData = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %d, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d",
+//        String plotData = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %d, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d",
+//                TimeUnit.MILLISECONDS.toSeconds(now.getTime()), cyclesCompleted, currentParentInputIdx,
+//                numSavedInputs, 0, 0, nonZeroFraction, uniqueFailures.size(), 0, 0, intervalExecsPerSecDouble,
+//                numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount);
+//        appendLineToFile(statsFile, plotData);
+
+        String plotData = String.format("%d, %d, %d, %d, %.2f%%, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d",
                 TimeUnit.MILLISECONDS.toSeconds(now.getTime()), cyclesCompleted, currentParentInputIdx,
-                numSavedInputs, 0, 0, nonZeroFraction, uniqueFailures.size(), 0, 0, intervalExecsPerSecDouble,
+                numSavedInputs, nonZeroFraction, uniqueFailures.size(), totalFailures, intervalExecsPerSecDouble,
                 numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount);
         appendLineToFile(statsFile, plotData);
     }
@@ -998,12 +1007,19 @@ public class ARTGuidance implements Guidance {
                     // Save crash to disk
                     int crashIdx = uniqueFailures.size() - 1;
                     String saveFileName = String.format("id_%06d", crashIdx);
-                    File saveFile = new File(savedFailuresDirectory, saveFileName);
-                    GuidanceException.wrap(() -> writeCurrentInputToFile(saveFile));
-                    infoLog("%s", "Found crash: " + error.getClass() + " - " + (msg != null ? msg : ""));
-                    String how = currentInput.desc;
-                    String why = result == Result.FAILURE ? "+crash" : "+hang";
-                    infoLog("Saved - %s %s %s", saveFile.getPath(), how, why);
+                    if (SAVE_INPUT_FILES) {
+                        File saveFile = new File(savedFailuresDirectory, saveFileName);
+                        GuidanceException.wrap(() -> writeCurrentInputToFile(saveFile));
+                        infoLog("%s", "Found crash: " + error.getClass() + " - " + (msg != null ? msg : ""));
+                        String how = currentInput.desc;
+                        String why = result == Result.FAILURE ? "+crash" : "+hang";
+                        infoLog("Saved - %s %s %s", saveFile.getPath(), how, why);
+                    } else {
+                        infoLog("%s", "Found crash: " + error.getClass() + " - " + (msg != null ? msg : ""));
+                        String how = currentInput.desc;
+                        String why = result == Result.FAILURE ? "+crash" : "+hang";
+                        infoLog("Saved - %s %s %s", saveFileName, how, why);
+                    }
 
                     if (EXACT_CRASH_PATH != null && !EXACT_CRASH_PATH.equals("")) {
                         File exactCrashFile = new File(EXACT_CRASH_PATH);
@@ -1171,9 +1187,14 @@ public class ARTGuidance implements Guidance {
         int newInputIdx = numSavedInputs++;
         String saveFileName = String.format("id_%06d", newInputIdx);
         String how = currentInput.desc;
-        File saveFile = new File(savedCorpusDirectory, saveFileName);
-        writeCurrentInputToFile(saveFile);
-        infoLog("Saved - %s %s %s", saveFile.getPath(), how, why);
+        if (SAVE_INPUT_FILES) {
+            File saveFile = new File(savedCorpusDirectory, saveFileName);
+            writeCurrentInputToFile(saveFile);
+            infoLog("Saved - %s %s %s", saveFile.getPath(), how, why);
+            currentInput.saveFile = saveFile;
+        } else {
+            infoLog("Saved - %s %s %s", saveFileName, how, why);
+        }
 
         // If not using guidance, do nothing else
         if (blind) {
@@ -1185,7 +1206,6 @@ public class ARTGuidance implements Guidance {
 
         // Third, store basic book-keeping data
         currentInput.id = newInputIdx;
-        currentInput.saveFile = saveFile;
         currentInput.coverage = runCoverage.copy();
         currentInput.nonZeroCoverage = runCoverage.getNonZeroCount();
         currentInput.offspring = 0;

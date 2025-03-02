@@ -49,7 +49,8 @@ import org.eclipse.collections.impl.list.mutable.primitive.IntArrayList;
 public class Coverage implements TraceEventVisitor, ICoverage<Counter> {
 
     /** The size of the coverage map. */
-    private final int COVERAGE_MAP_SIZE = (1 << 16) - 1; // Minus one to reduce collisions
+    protected final int MAP_SIZE_POW = Integer.getInteger("jqf.ei.MAP_SIZE_POW", 17);
+    private final int COVERAGE_MAP_SIZE = (1 << MAP_SIZE_POW - 1) - 1; // Minus one to reduce collisions
 
     /** The coverage counts for each edge. */
     private final Counter counter = new NonZeroCachingCounter(COVERAGE_MAP_SIZE);

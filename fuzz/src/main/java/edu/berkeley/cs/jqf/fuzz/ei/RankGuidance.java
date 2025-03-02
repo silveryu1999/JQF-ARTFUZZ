@@ -39,6 +39,7 @@ import edu.berkeley.cs.jqf.instrument.tracing.events.TraceEvent;
 import janala.instrument.FastCoverageListener;
 import org.eclipse.collections.api.iterator.IntIterator;
 import org.eclipse.collections.api.list.primitive.IntList;
+import org.eclipse.collections.impl.list.mutable.primitive.IntArrayList;
 import org.eclipse.collections.impl.set.mutable.primitive.IntHashSet;
 
 import java.io.*;
@@ -269,33 +270,81 @@ public class RankGuidance implements Guidance {
     /** Set of saved invalid seeds **/
     protected ArrayList<Input> savedInvalidInputs = new ArrayList<>();
 
-    /** Set of new unique failed inputs. */
+    /** Set of new unique failed inputs. **/
     protected ArrayList<Input> newUniqueFailedInputs = new ArrayList<>();
 
-    /** Seconds for ranking seeds **/
-    protected double lastRankingTime = 0.0;
+    /** Number of new unique failures. **/
+    protected int newUniqueFailures = 0;
 
-    /** Seconds for mutate seed **/
-    protected double lastMutateTime = 0.0;
+    /** Seconds for updating seeds distances **/
+    protected double lastUpdatingTime = 0.0;
+
+    /** Seconds for sorting seeds **/
+    protected double lastSortingTime = 0.0;
+
+    /** Avg seconds for calculating Euclidean seeds distances **/
+    protected double avgCalEuclideanTime = 0.0;
+
+    /** Last counts for calculating Euclidean seeds distances **/
+    protected int EuclideanCount = 0;
 
     /** Weight of failure distance **/
-    /** from 0 to 100 ()**/
+    /** from 0 to 100 () **/
     protected final int WEIGHT_OF_TO_FAILURE_DISTANCE = Integer.getInteger("jqf.ei.WEIGHT_OF_TO_FAILURE_DISTANCE", 0);
 
-    /** Whether to use custom mutation. */
+    /** Whether to use custom mutation. **/
     protected final boolean CUSTOM_MUTATION = Boolean.getBoolean("jqf.ei.CUSTOM_MUTATION");
 
-    /** Sign of weight. */
-    protected final boolean WEIGHT_TO_FAILURE_IS_POSITIVE = Boolean.getBoolean("jqf.ei.WEIGHT_TO_FAILURE_IS_POSITIVE");
+    /** Whether to use custom mutation on time and size. **/
+    protected final boolean CUSTOM_MUTATION_TIME_AND_SIZE = Boolean.getBoolean("jqf.ei.CUSTOM_MUTATION_TIME_AND_SIZE");
 
-    /** Whether distance to only valid seeds */
-    protected final boolean DISTANCE_ONLY_TO_VALID = Boolean.getBoolean("jqf.ei.DISTANCE_ONLY_TO_VALID");
+    /** Whether to use custom energy assignment **/
+    protected final boolean CUSTOM_ENERGY = Boolean.getBoolean("jqf.ei.CUSTOM_ENERGY");
 
-    /** Current maximum distance to invalid **/
-    protected int maxInvalidDis = Integer.MIN_VALUE;
+    /** Whether to select the valid seeds first **/
+    protected final boolean VALID_SEED_FIRST = Boolean.getBoolean("jqf.ei.VALID_SEED_FIRST");
 
-    /** Current maximum distance to valid **/
-    protected int maxValidDis = Integer.MIN_VALUE;
+    /** Whether to use crossover **/
+    protected final boolean USE_CROSSOVER = Boolean.getBoolean("jqf.ei.USE_CROSSOVER");
+
+    /** Whether to save input files **/
+    protected final boolean SAVE_INPUT_FILES = Boolean.getBoolean("jqf.ei.SAVE_INPUT_FILES");
+
+    /** Probability of crossover **/
+    /** from 0 to 100 ()**/
+    protected final int CROSSOVER_PROBABILITY = Integer.getInteger("jqf.ei.CROSSOVER_PROBABILITY", 25);
+
+    /** Probability of crossover **/
+    protected final double crossoverRate = (CROSSOVER_PROBABILITY * 1.0 / 100.0);
+
+    /** Current mean distance to invalid seeds **/
+    protected double meanInvalidDis = 0.0;
+
+    /** Current mean distance to valid seeds **/
+    protected double meanValidDis = 0.0;
+
+    /** Overhead of seed updating **/
+    protected long seedUpdatingMilliseconds = 0;
+
+    /** Overhead of seed sorting **/
+    protected long seedSortingMilliseconds = 0;
+
+    /** Comparator of input **/
+    protected Comparator<Input> inputComparator = new Comparator<Input>() {
+        @Override
+        public int compare(Input o1, Input o2) {
+            if (o1.isValid() && o2.isValid()) {
+                return (int) (o2.minToValidSeedsAtCov - o1.minToValidSeedsAtCov);
+            } else if (!o1.isValid() && !o2.isValid()) {
+                return (int) (o2.minToValidSeedsAtCov - o1.minToValidSeedsAtCov);
+            } else if (o1.isValid() && !o2.isValid()) {
+                return -1;
+            } else if (!o1.isValid() && o2.isValid()) {
+                return 1;
+            }
+            return 0;
+        }
+    };
 
     /**
      * Creates a new Zest guidance instance with optional duration,
@@ -478,19 +527,19 @@ public class RankGuidance implements Guidance {
 //        appendLineToFile(statsCasesFile, plotDataCase);
 
         appendLineToFile(statsCovCasesFile, getStatCasesNames());
-        String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d, %d, %d",
+        String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d, %d, %d, %f, %.2f%%, %f, %.2f%%, %f, %.2f%%",
                 TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
-                numValid, numTrials-numValid, 0.0, 0.0, 0, 0, 0, 0, 0);
+                numValid, numTrials-numValid, 0.0, 0.0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         appendLineToFile(statsCovCasesFile, plotDataCaseCovOnly);
     }
 
     protected String getStatNames() {
-        return "# unix_time, cycles_done, cur_path, paths_total, pending_total, " +
-            "pending_favs, map_size, unique_crashes, unique_hangs, max_depth, execs_per_sec, valid_inputs, invalid_inputs, valid_cov, all_covered_probes, valid_covered_probes";
+        return "# unix_time, cycles_done, cur_path, paths_total, " +
+            "map_size, unique_crashes, all_crashes, execs_per_sec, valid_inputs, invalid_inputs, valid_cov, all_covered_probes, valid_covered_probes";
     }
 
     protected String getStatCasesNames() {
-        return "# unix_time, input_id, total_unique_failures, total_failures, total_valid, total_invalid, total_cov, total_valid_cov, total_branch, total_valid_branch, cycles, total_seeds, valid_seeds";
+        return "# unix_time, input_id, total_unique_failures, total_failures, total_valid, total_invalid, total_cov, total_valid_cov, total_branch, total_valid_branch, cycles, total_seeds, valid_seeds, overhead_total_seconds, overhead_total_percentage, update_total_seconds, update_total_percentage, sort_total_seconds, sort_total_percentage";
     }
 
     /* Writes a line of text to a given log file. */
@@ -576,9 +625,18 @@ public class RankGuidance implements Guidance {
         } else {
             Input currentParentInput = savedInputs.get(currentParentInputIdx);
             currentParentInputDesc = currentParentInputIdx + " ";
-            currentParentInputDesc += currentParentInput.isValid() ? "(favored/valid)" : "(not favored/invalid)";
-            currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentInput +
-                    "/" + getTargetChildrenForParentNew(currentParentInput) + " mutations}";
+            if (CUSTOM_ENERGY) {
+                currentParentInputDesc += currentParentInput.isFavored() ? "(favored)" : "(not favored)";
+                currentParentInputDesc += currentParentInput.isValid() ? "(valid)" : "(invalid)";
+                currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentInput +
+                        "/" + getTargetChildrenForParentNew(currentParentInput) + " mutations}";
+            } else {
+                currentParentInputDesc += currentParentInput.isFavored() ? "(favored)" : "(not favored)";
+                currentParentInputDesc += currentParentInput.isValid() ? "(valid)" : "(invalid)";
+                currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentInput +
+                    "/" + getTargetChildrenForParent(currentParentInput) + " mutations}";
+            }
+
         }
 
         int nonZeroCount = totalCoverage.getNonZeroCount();
@@ -614,23 +672,33 @@ public class RankGuidance implements Guidance {
                 console.printf("All Seeds (Old / New):     (%,d / %,d)\n", savedInputs.size(), newSeedsFromCurrentParent.size());
                 console.printf("Valid Seeds (Old / New):   (%,d / %,d)\n", savedValidInputs.size(), newValidSeedsFromCurrentParent.size());
                 console.printf("Invalid Seeds (Old / New): (%,d / %,d)\n", savedInvalidInputs.size(), newInvalidSeedsFromCurrentParent.size());
-                console.printf("Unique Failures (New):     (%,d)\n", newUniqueFailedInputs.size());
+                console.printf("Unique Failures (New):     (%,d)\n", newUniqueFailures);
+                console.printf("Mean Valid/Invalid Dis:    (%f / %f)\n", meanValidDis, meanInvalidDis);
                 console.printf("Current parent input: %s\n", currentParentInputDesc);
+                console.printf("Current parent Distance:   %f\n", savedInputs.get(currentParentInputIdx).minToValidSeedsAtCov);
                 console.printf("Execution speed:      %,d/sec now | %,d/sec overall\n", intervalExecsPerSec, execsPerSec);
                 console.printf("Total coverage:       %,d branches (%.2f%% of map)\n", nonZeroCount, nonZeroFraction);
                 console.printf("Valid coverage:       %,d branches (%.2f%% of map)\n", nonZeroValidCount, nonZeroValidFraction);
                 console.printf("EOF counts:           %,d\n", EOFcount);
-                console.printf("Last Ranking Time:    %f\n", lastRankingTime);
-                console.printf("Last Mutation Time:   %f\n", lastMutateTime);
+                console.printf("Last Update/Sort Time:     (%f / %f)\n", lastUpdatingTime, lastSortingTime);
+                console.printf("Last Avg Euclidean Time:   %f\n", avgCalEuclideanTime);
+                console.printf("Last Euclidean Counts:     %d\n", EuclideanCount);
+                console.printf("Overhead Updating / Sorting:       (%.2f%% / %.2f%%)\n", seedUpdatingMilliseconds * 100.0 / elapsedMilliseconds, seedSortingMilliseconds * 100.0 / elapsedMilliseconds);
                 console.printf("JVM Total Memory:     %,f\n", (Runtime.getRuntime().totalMemory()) / (1024.0 * 1024));
                 console.printf("JVM Max Memory:       %,f\n", (Runtime.getRuntime().maxMemory()) / (1024.0 * 1024));
                 console.printf("JVM Free Memory:      %,f\n", (Runtime.getRuntime().freeMemory()) / (1024.0 * 1024));
             }
         }
 
-        String plotData = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %d, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d",
+//        String plotData = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %d, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d",
+//                TimeUnit.MILLISECONDS.toSeconds(now.getTime()), cyclesCompleted, currentParentInputIdx,
+//                numSavedInputs, 0, 0, nonZeroFraction, uniqueFailures.size(), 0, 0, intervalExecsPerSecDouble,
+//                numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount);
+//        appendLineToFile(statsFile, plotData);
+
+        String plotData = String.format("%d, %d, %d, %d, %.2f%%, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d",
                 TimeUnit.MILLISECONDS.toSeconds(now.getTime()), cyclesCompleted, currentParentInputIdx,
-                numSavedInputs, 0, 0, nonZeroFraction, uniqueFailures.size(), 0, 0, intervalExecsPerSecDouble,
+                numSavedInputs, nonZeroFraction, uniqueFailures.size(), totalFailures, intervalExecsPerSecDouble,
                 numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount);
         appendLineToFile(statsFile, plotData);
     }
@@ -680,26 +748,35 @@ public class RankGuidance implements Guidance {
     }
 
     protected int getTargetChildrenForParentNew(Input parentInput) {
-        // Now, we assign energy according to the distance
+        // Baseline is a constant
         int target = NUM_CHILDREN_BASELINE;
 
-        int maxDis = Math.max(maxValidDis, maxInvalidDis);
+        // We like inputs that cover many things, so scale with fraction of max
+        if (maxCoverage > 0) {
+            target = (NUM_CHILDREN_BASELINE * parentInput.nonZeroCoverage) / maxCoverage;
+        }
 
+        // We absolutely love favored inputs, so fuzz them more
+        if (parentInput.isFavored()) {
+            target = target * NUM_CHILDREN_MULTIPLIER_FAVORED;
+        }
+
+        // adjust the target number according to the distance
         if (parentInput.isValid()) {
-            if (maxDis == Integer.MIN_VALUE) {
-                return target * NUM_CHILDREN_MULTIPLIER_FAVORED;
-            } else {
-                target = (NUM_CHILDREN_BASELINE * parentInput.minToValidSeeds) / maxDis;
-                return target * NUM_CHILDREN_MULTIPLIER_FAVORED;
+            if (meanValidDis != 0.0 && parentInput.minToValidSeedsAtCov != Double.MAX_VALUE) {
+                target = (int) ((double) target * Math.min(Math.max((parentInput.minToValidSeedsAtCov / meanValidDis), 0.1), 2.0));
             }
         } else {
-            if (maxDis == Integer.MIN_VALUE) {
-                return target;
-            } else {
-                target = (NUM_CHILDREN_BASELINE * parentInput.minToSeeds) / maxDis;
-                return target;
+            if (meanInvalidDis != 0.0 && parentInput.minToValidSeedsAtCov != Double.MAX_VALUE) {
+                target = (int) ((double) target * Math.min(Math.max((parentInput.minToValidSeedsAtCov / meanValidDis), 0.1), 2.0));
             }
         }
+
+        if (parentInput.isValid()) {
+            target = target * 2;
+        }
+
+        return target;
     }
 
     /** Handles the end of fuzzing cycle (i.e., having gone through the entire queue) */
@@ -770,9 +847,8 @@ public class RankGuidance implements Guidance {
         };
     }
 
-    public int calDistance(Input a, Input b) {
+    public int calHammingDistance(Input a, Input b) {
         // hamming distance from a to b
-        int distance = 0;
         IntHashSet tempSet = new IntHashSet();
         IntList nonZeroKeys1 = a.coverage.getCounter().getNonZeroIndices();
         IntList nonZeroKeys2 = b.coverage.getCounter().getNonZeroIndices();
@@ -802,494 +878,234 @@ public class RankGuidance implements Guidance {
         return nonZeroKeys1.size() + nonZeroKeys2.size() - 2 * intersection;
     }
 
-//    public int calDistance(Input a, Input b) {
-//        // hamming distance from a to b
-//        int distance = 0;
-//        IntHashSet tempSet = new IntHashSet();
-//        IntList nonZeroKeys1 = a.coverage.getCounter().getNonZeroIndices();
-//        IntList nonZeroKeys2 = b.coverage.getCounter().getNonZeroIndices();
-//        tempSet.addAll(nonZeroKeys1);
-//        IntIterator iter = nonZeroKeys2.intIterator();
-//        while(iter.hasNext()){
-//            int idx = iter.next();
-//            if (tempSet.contains(idx)) {
-//                distance--;
+    public double calEuclideanDistance(Input a, Input b) {
+        double distance = 0.0;
+//        IntHashSet tempSet1 = new IntHashSet();
+//        IntHashSet tempSet2 = new IntHashSet();
+//        Counter c1 = a.coverage.getCounter();
+//        Counter c2 = b.coverage.getCounter();
+//        IntList nonZeroKeys1 = c1.getNonZeroIndices();
+//        IntList nonZeroKeys2 = c2.getNonZeroIndices();
+//
+//        tempSet1.addAll(nonZeroKeys1);
+//        IntIterator iter2 = nonZeroKeys2.intIterator();
+//        while (iter2.hasNext()) {
+//            int idx = iter2.next();
+//            if (tempSet1.contains(idx)) {
+////                distance += Math.sqrt((c1.get(idx) - c2.get(idx)) * (c1.get(idx) - c2.get(idx)));
+//                distance += (c1.get(idx) - c2.get(idx)) * (c1.get(idx) - c2.get(idx));
 //            } else {
-//                distance++;
+//                distance += c2.get(idx) * c2.get(idx);
 //            }
 //        }
 //
-//        return tempSet.size() + distance;
-//    }
+//        tempSet2.addAll(nonZeroKeys2);
+//        IntIterator iter1 = nonZeroKeys1.intIterator();
+//        while (iter1.hasNext()) {
+//            int idx = iter1.next();
+//            if (!tempSet2.contains(idx)) {
+//                distance += c1.get(idx) * c1.get(idx);
+//            }
+//        }
+
+        Counter c1 = a.coverage.getCounter();
+        Counter c2 = b.coverage.getCounter();
+        IntArrayList nonZeroKeys1 = (IntArrayList) c1.getNonZeroIndices();
+        IntArrayList nonZeroKeys2 = (IntArrayList) c2.getNonZeroIndices();
+        nonZeroKeys1.sortThis();
+        nonZeroKeys2.sortThis();
+
+        int i = 0;
+        int j = 0;
+        while (i < nonZeroKeys1.size() && j < nonZeroKeys2.size()) {
+            int idx1 = nonZeroKeys1.get(i);
+            int idx2 = nonZeroKeys2.get(j);
+            if (idx1 == idx2) {
+                distance += (c1.get(idx1) - c2.get(idx2)) * (c1.get(idx1) - c2.get(idx2));
+                i++;
+                j++;
+            } else if (idx1 < idx2) {
+                distance += c1.get(idx1) * c1.get(idx1);
+                i++;
+            } else {
+                distance += c2.get(idx1) * c2.get(idx1);
+                j++;
+            }
+        }
+
+        while (i < nonZeroKeys1.size()) {
+            distance += c1.get(nonZeroKeys1.get(i)) * c1.get(nonZeroKeys1.get(i));
+            i++;
+        }
+
+        while (j < nonZeroKeys2.size()) {
+            distance += c2.get(nonZeroKeys2.get(j)) * c2.get(nonZeroKeys2.get(j));
+            j++;
+        }
+
+        return Math.sqrt(distance);
+    }
+
+    public int calHammingDistanceInput(Input a, Input b) {
+        ArrayList<Integer> aValue = ((LinearInput) a).values;
+        ArrayList<Integer> bValue = ((LinearInput) b).values;
+
+        int distance = 0;
+
+        for (int i = 0; i < Math.min(aValue.size(), bValue.size()); i++) {
+            distance += Integer.bitCount(aValue.get(i) ^ bValue.get(i));
+        }
+
+        if (aValue.size() != bValue.size()) {
+            distance += Math.abs(aValue.size() - bValue.size()) * 8;
+        }
+
+        return distance;
+    }
 
     @Override
     public void EOFcount() {
         EOFcount++;
     }
 
-    public void rankingSeedsToValid() {
-        long currentTime = System.currentTimeMillis();
-
-        // update the distance measures to valid seeds
-        for (int i=0; i<newSeedsFromCurrentParent.size(); i++) {
-            Input newSeed = newSeedsFromCurrentParent.get(i);
-
-            if (newSeed.isValid()) {
-                // newSeed is valid
-                // first, update with the old seeds
-                for (Input oldSeed : savedInputs) {
-                    int dis = calDistance(newSeed, oldSeed);
-                    oldSeed.minToValidSeeds = Math.min(oldSeed.minToValidSeeds, dis);
-                    if (oldSeed.isValid()) {
-                        newSeed.minToValidSeeds = Math.min(newSeed.minToValidSeeds, dis);
-                    }
-                }
-                // then, update with the new seeds
-                for (int j=0; j<newSeedsFromCurrentParent.size(); j++) {
-                    if (i==j) {
-                        continue;
-                    }
-                    Input anotherNewSeed = newSeedsFromCurrentParent.get(j);
-                    int dis = calDistance(newSeed, anotherNewSeed);
-                    anotherNewSeed.minToValidSeeds = Math.min(anotherNewSeed.minToValidSeeds, dis);
-                    if (anotherNewSeed.isValid()) {
-                        newSeed.minToValidSeeds = Math.min(newSeed.minToValidSeeds, dis);
-                    }
-                }
+    public void rankingSeedsConditionally() {
+        // ranking mode
+        // 0: full ranking on saved seeds (when reaching the end of saved seeds, a start of new cycle)
+        // 1: additional ranking on new seeds, also updating the distances
+        // 2: no ranking
+        int rankingMode = 2;
+        if (currentParentInputIdx == savedInputs.size() - 1) {
+            if (newSeedsFromCurrentParent.isEmpty()) {
+                rankingMode = 0;
             } else {
-                // newSeed is not valid
-                // first, update with the old valid seeds
-                for (Input oldSeed : savedInputs) {
-                    if (oldSeed.isValid()) {
-                        newSeed.minToValidSeeds = Math.min(newSeed.minToValidSeeds, calDistance(newSeed, oldSeed));
-                    }
+                rankingMode = 1;
+            }
+        } else if (VALID_SEED_FIRST && !savedInputs.get(currentParentInputIdx + 1).isValid() && !newValidSeedsFromCurrentParent.isEmpty()) {
+            rankingMode = 1;
+        }
+
+        if (rankingMode == 0) {
+            long currentTime = System.currentTimeMillis();
+
+            // perform a full ranking
+            savedInputs.sort(inputComparator);
+
+            // calculate the mean dis
+            meanValidDis = 0.0;
+            meanInvalidDis = 0.0;
+            int toValidDisCount = 0;
+            int toInvalidDisCount = 0;
+            for (Input currentSeed : savedInputs) {
+                if (currentSeed.isValid() && currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
+                    meanValidDis = meanValidDis * ((double) toValidDisCount / (double) (toValidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toValidDisCount + 1));
                 }
-                // then, update with the new valid seeds
-                for (int j=0; j<newSeedsFromCurrentParent.size(); j++) {
-                    if (i==j) {
-                        continue;
-                    }
-                    Input anotherNewSeed = newSeedsFromCurrentParent.get(j);
-                    if (anotherNewSeed.isValid()) {
-                        newSeed.minToValidSeeds = Math.min(newSeed.minToValidSeeds, calDistance(newSeed, anotherNewSeed));
-                    }
+                if (!currentSeed.isValid() && currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
+                    meanInvalidDis = meanInvalidDis * ((double) toInvalidDisCount / (double) (toInvalidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toInvalidDisCount + 1));
                 }
             }
-        }
 
-        // update the distance measures to unique failures
-        for (Input uniqueFailure : newUniqueFailedInputs) {
-            // update the old seeds
-            for (Input oldSeed : savedInputs) {
-                oldSeed.minToUniqueFailures = Math.min(oldSeed.minToUniqueFailures, calDistance(oldSeed, uniqueFailure));
-            }
+            long elapsedTime = System.currentTimeMillis() - currentTime;
+            seedSortingMilliseconds += elapsedTime;
+            lastSortingTime = (elapsedTime * 1.0) / 1000.0;
+        } else if (rankingMode == 1) {
+            long currentTime = System.currentTimeMillis();
+            // first update the distances, then append the new seeds, finally sort from the new ones
 
-            // then, update the new seeds
-            for (Input newSeed : newSeedsFromCurrentParent) {
-                newSeed.minToUniqueFailures = Math.min(newSeed.minToUniqueFailures, calDistance(newSeed, uniqueFailure));
-            }
-        }
+            EuclideanCount = 0;
 
-        // select the not chosen seed in this lifecycle with the maximum discrimination
-        savedInputs.addAll(newSeedsFromCurrentParent);
-        newSeedsFromCurrentParent.clear();
-        savedValidInputs.addAll(newValidSeedsFromCurrentParent);
-        newValidSeedsFromCurrentParent.clear();
-        newUniqueFailedInputs.clear();
+            for (int i=0; i<newSeedsFromCurrentParent.size(); i++) {
+                Input newSeed = newSeedsFromCurrentParent.get(i);
 
-        // the old seeds starts from 0 to startIndex (included)
-        int startIndex = currentParentInputIdx;
-        if (startIndex + 1 == savedInputs.size()) {
-            // we have to select the seed from all stored one
-            startIndex = 0;
-        } else {
-            // select the seed from startIndex to savedInputs.size()-1 (included)
-            startIndex++;
-        }
+                if (newSeed.isValid()) {
+                    // update with the old seeds
+                    for (Input oldSeed : savedInputs) {
+                        long calEuclideanStartTime = System.currentTimeMillis();
+                        double dis = calEuclideanDistance(oldSeed, newSeed);
+                        avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
+                        EuclideanCount++;
 
-        int selectedIndex = -1;
-        int currMaximumDis = Integer.MIN_VALUE;
-        for (int i = startIndex; i < savedInputs.size(); i++) {
-            Input currentSeed = savedInputs.get(i);
+                        oldSeed.minToValidSeedsAtCov = Math.min(oldSeed.minToValidSeedsAtCov, dis);
+                        if (oldSeed.isValid()) {
+                            newSeed.minToValidSeedsAtCov = Math.min(newSeed.minToValidSeedsAtCov, dis);
+                        }
+                    }
 
-            int currentToValidSeedDis = currentSeed.minToValidSeeds != Integer.MAX_VALUE ? currentSeed.minToValidSeeds : 0;
+                    // update with the new seeds
+                    for (int j=i+1; j<newSeedsFromCurrentParent.size(); j++) {
+                        Input anotherNewSeed = newSeedsFromCurrentParent.get(j);
+                        long calEuclideanStartTime = System.currentTimeMillis();
+                        double dis = calEuclideanDistance(anotherNewSeed, newSeed);
+                        avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
+                        EuclideanCount++;
 
-            int dis;
-            if (!uniqueFailures.isEmpty()) {
-                if (WEIGHT_TO_FAILURE_IS_POSITIVE) {
-                    dis = currentToValidSeedDis + (int) ((WEIGHT_OF_TO_FAILURE_DISTANCE * 1.0 / 100.0) * currentSeed.minToUniqueFailures);
+                        anotherNewSeed.minToValidSeedsAtCov = Math.min(anotherNewSeed.minToValidSeedsAtCov, dis);
+                        if (anotherNewSeed.isValid()) {
+                            newSeed.minToValidSeedsAtCov = Math.min(newSeed.minToValidSeedsAtCov, dis);
+                        }
+                    }
                 } else {
-                    dis = currentToValidSeedDis - (int) ((WEIGHT_OF_TO_FAILURE_DISTANCE * 1.0 / 100.0) * currentSeed.minToUniqueFailures);
-                }
-            } else {
-                dis = currentToValidSeedDis;
-            }
+                    // update with the old seeds
+                    for (Input oldSeed : savedInputs) {
+                        if (oldSeed.isValid()) {
+                            long calEuclideanStartTime = System.currentTimeMillis();
+                            double dis = calEuclideanDistance(oldSeed, newSeed);
+                            avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
+                            EuclideanCount++;
 
-            if (dis > currMaximumDis) {
-                currMaximumDis = dis;
-                selectedIndex = i;
-            }
-        }
+                            newSeed.minToValidSeedsAtCov = Math.min(newSeed.minToValidSeedsAtCov, dis);
+                        }
+                    }
 
-        Input selectedSeed = savedInputs.get(selectedIndex);
-        savedInputs.remove(selectedIndex);
-        savedInputs.add(startIndex, selectedSeed);
+                    // update with the new seeds
+                    for (int j=i+1; j<newSeedsFromCurrentParent.size(); j++) {
+                        Input anotherNewSeed = newSeedsFromCurrentParent.get(j);
+                        if (anotherNewSeed.isValid()) {
+                            long calEuclideanStartTime = System.currentTimeMillis();
+                            double dis = calEuclideanDistance(anotherNewSeed, newSeed);
+                            avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
+                            EuclideanCount++;
 
-        long elapsedTime = System.currentTimeMillis() - currentTime;
-        lastRankingTime = (elapsedTime * 1.0) / 1000.0;
-    }
-
-    public void rankingSeeds() {
-        long currentTime = System.currentTimeMillis();
-
-        // update the distance measures to seeds, at full input space
-        for (int i=0; i<newSeedsFromCurrentParent.size(); i++) {
-            Input newSeed = newSeedsFromCurrentParent.get(i);
-            // first, update the old seeds
-            for (Input oldSeed : savedInputs) {
-                int dis = calDistance(oldSeed, newSeed);
-                oldSeed.minToSeeds = Math.min(oldSeed.minToSeeds, dis);
-                newSeed.minToSeeds = Math.min(newSeed.minToSeeds, dis);
-            }
-
-            // then, update the new seeds
-            for (int j=0; j<newSeedsFromCurrentParent.size(); j++) {
-                if (i==j) {
-                    continue;
-                }
-                Input anotherNewSeed = newSeedsFromCurrentParent.get(j);
-                int dis = calDistance(newSeed, anotherNewSeed);
-                newSeed.minToSeeds = Math.min(newSeed.minToSeeds, dis);
-                anotherNewSeed.minToSeeds = Math.min(anotherNewSeed.minToSeeds, dis);
-            }
-        }
-
-        // update the distance measures to valid seeds, at valid input space
-        for (int i=0; i<newValidSeedsFromCurrentParent.size(); i++) {
-            Input newValidSeed = newValidSeedsFromCurrentParent.get(i);
-            // first, update the old valid seeds
-            for (Input oldValidSeed : savedValidInputs) {
-                int dis = calDistance(oldValidSeed, newValidSeed);
-                oldValidSeed.minToValidSeeds = Math.min(oldValidSeed.minToValidSeeds, dis);
-                newValidSeed.minToValidSeeds = Math.min(newValidSeed.minToValidSeeds, dis);
-            }
-
-            // then, update the new valid seeds
-            for (int j=0; j<newValidSeedsFromCurrentParent.size(); j++) {
-                if (i==j) {
-                    continue;
-                }
-                Input anotherNewValidSeed = newValidSeedsFromCurrentParent.get(j);
-                int dis = calDistance(newValidSeed, anotherNewValidSeed);
-                newValidSeed.minToValidSeeds = Math.min(newValidSeed.minToValidSeeds, dis);
-                anotherNewValidSeed.minToValidSeeds = Math.min(anotherNewValidSeed.minToValidSeeds, dis);
-            }
-        }
-
-        // update the distance measures to unique failures
-        for (Input uniqueFailure : newUniqueFailedInputs) {
-            // update the old seeds
-            for (Input oldSeed : savedInputs) {
-                oldSeed.minToUniqueFailures = Math.min(oldSeed.minToUniqueFailures, calDistance(oldSeed, uniqueFailure));
-            }
-
-            // then, update the new seeds
-            for (Input newSeed : newSeedsFromCurrentParent) {
-                newSeed.minToUniqueFailures = Math.min(newSeed.minToUniqueFailures, calDistance(newSeed, uniqueFailure));
-            }
-        }
-
-        // select the not chosen seed in this lifecycle with the maximum discrimination
-        savedInputs.addAll(newSeedsFromCurrentParent);
-        newSeedsFromCurrentParent.clear();
-        savedValidInputs.addAll(newValidSeedsFromCurrentParent);
-        newValidSeedsFromCurrentParent.clear();
-        savedInvalidInputs.addAll(newInvalidSeedsFromCurrentParent);
-        newInvalidSeedsFromCurrentParent.clear();
-        newUniqueFailedInputs.clear();
-
-        // the old seeds starts from 0 to startIndex (included)
-        int startIndex = currentParentInputIdx;
-        if (startIndex + 1 == savedInputs.size()) {
-            // we have to select the seed from all stored one
-            startIndex = 0;
-        } else {
-            // select the seed from startIndex to savedInputs.size()-1 (included)
-            startIndex++;
-        }
-
-        int selectedIndex = -1;
-        int currMaximumDis = Integer.MIN_VALUE;
-        for (int i = startIndex; i < savedInputs.size(); i++) {
-            Input currentSeed = savedInputs.get(i);
-
-            int currentToSeedDis = currentSeed.minToSeeds != Integer.MAX_VALUE ? currentSeed.minToSeeds : 0;
-            int currentToValidSeedDis = currentSeed.isValid() ? currentSeed.minToValidSeeds : 0;
-
-            int dis;
-            if (!uniqueFailures.isEmpty()) {
-                if (WEIGHT_TO_FAILURE_IS_POSITIVE) {
-                    dis = currentSeed.isValid() ? currentToValidSeedDis + currentToSeedDis : currentToSeedDis + (int) ((WEIGHT_OF_TO_FAILURE_DISTANCE * 1.0 / 100.0) * currentSeed.minToUniqueFailures);
-                } else {
-                    dis = currentSeed.isValid() ? currentToValidSeedDis + currentToSeedDis : currentToSeedDis - (int) ((WEIGHT_OF_TO_FAILURE_DISTANCE * 1.0 / 100.0) * currentSeed.minToUniqueFailures);
-                }
-            } else {
-                dis = currentSeed.isValid() ? currentToValidSeedDis + currentToSeedDis : currentToSeedDis;
-            }
-
-            if (dis > currMaximumDis) {
-                currMaximumDis = dis;
-                selectedIndex = i;
-            }
-        }
-
-        Input selectedSeed = savedInputs.get(selectedIndex);
-        savedInputs.remove(selectedIndex);
-        savedInputs.add(startIndex, selectedSeed);
-
-        long elapsedTime = System.currentTimeMillis() - currentTime;
-        lastRankingTime = (elapsedTime * 1.0) / 1000.0;
-    }
-
-    public void rankingSeedsNew() {
-        long currentTime = System.currentTimeMillis();
-
-        // update the distance measures to valid seeds, at valid input space
-        for (int i=0; i<newValidSeedsFromCurrentParent.size(); i++) {
-            Input newValidSeed = newValidSeedsFromCurrentParent.get(i);
-
-            // first, update the old valid seeds
-            for (Input oldValidSeed : savedValidInputs) {
-                int dis = calDistance(newValidSeed, oldValidSeed);
-                oldValidSeed.minToValidSeeds = Math.min(oldValidSeed.minToValidSeeds, dis);
-                newValidSeed.minToValidSeeds = Math.min(newValidSeed.minToValidSeeds, dis);
-            }
-
-            // then, update with the new valid seeds
-            for (int j=i+1; j<newValidSeedsFromCurrentParent.size(); j++) {
-                Input anotherNewValidSeed = newValidSeedsFromCurrentParent.get(j);
-                int dis = calDistance(newValidSeed, anotherNewValidSeed);
-                newValidSeed.minToValidSeeds = Math.min(newValidSeed.minToValidSeeds, dis);
-                anotherNewValidSeed.minToValidSeeds = Math.min(anotherNewValidSeed.minToValidSeeds, dis);
-            }
-        }
-
-        // update the distance measures to invalid seeds, at invalid input space
-        for (int i=0; i<newInvalidSeedsFromCurrentParent.size(); i++) {
-            Input newInvalidSeed = newInvalidSeedsFromCurrentParent.get(i);
-
-            // first, update the old invalid seeds
-            for (Input oldInvalidSeed : savedValidInputs) {
-                int dis = calDistance(newInvalidSeed, oldInvalidSeed);
-                oldInvalidSeed.minToSeeds = Math.min(oldInvalidSeed.minToSeeds, dis);
-                newInvalidSeed.minToSeeds = Math.min(newInvalidSeed.minToSeeds, dis);
-            }
-
-            // then, update with the new valid seeds
-            for (int j=i+1; j<newInvalidSeedsFromCurrentParent.size(); j++) {
-                Input anotherNewInvalidSeed = newInvalidSeedsFromCurrentParent.get(j);
-                int dis = calDistance(newInvalidSeed, anotherNewInvalidSeed);
-                newInvalidSeed.minToSeeds = Math.min(newInvalidSeed.minToSeeds, dis);
-                anotherNewInvalidSeed.minToSeeds = Math.min(anotherNewInvalidSeed.minToSeeds, dis);
-            }
-        }
-
-        // update the distance measures to unique failures
-        for (Input uniqueFailure : newUniqueFailedInputs) {
-            // update the old seeds
-            for (Input oldSeed : savedInputs) {
-                oldSeed.minToUniqueFailures = Math.min(oldSeed.minToUniqueFailures, calDistance(oldSeed, uniqueFailure));
-            }
-
-            // then, update the new seeds
-            for (Input newSeed : newSeedsFromCurrentParent) {
-                newSeed.minToUniqueFailures = Math.min(newSeed.minToUniqueFailures, calDistance(newSeed, uniqueFailure));
-            }
-        }
-
-        // select the not chosen seed in this lifecycle with the maximum discrimination
-        savedInputs.addAll(newSeedsFromCurrentParent);
-        newSeedsFromCurrentParent.clear();
-        savedValidInputs.addAll(newValidSeedsFromCurrentParent);
-        newValidSeedsFromCurrentParent.clear();
-        savedInvalidInputs.addAll(newInvalidSeedsFromCurrentParent);
-        newInvalidSeedsFromCurrentParent.clear();
-        newUniqueFailedInputs.clear();
-
-        // the old seeds starts from 0 to startIndex (included)
-        int startIndex = currentParentInputIdx;
-        if (startIndex + 1 == savedInputs.size()) {
-            // we have to select the seed from all stored one
-            startIndex = 0;
-        } else {
-            // select the seed from startIndex to savedInputs.size()-1 (included)
-            startIndex++;
-        }
-
-        int selectedInvalidIndex = -1;
-        int currMaximumDisInvalid = Integer.MIN_VALUE;
-        int selectedValidIndex = -1;
-        int currMaximumDisValid = Integer.MIN_VALUE;
-        for (int i = startIndex; i < savedInputs.size(); i++) {
-            Input currentSeed = savedInputs.get(i);
-
-            int dis;
-            if (!uniqueFailures.isEmpty()) {
-                if (WEIGHT_TO_FAILURE_IS_POSITIVE) {
-                    dis = currentSeed.isValid() ? currentSeed.minToValidSeeds : currentSeed.minToSeeds + (int) ((WEIGHT_OF_TO_FAILURE_DISTANCE * 1.0 / 100.0) * currentSeed.minToUniqueFailures);
-                } else {
-                    dis = currentSeed.isValid() ? currentSeed.minToValidSeeds : currentSeed.minToSeeds - (int) ((WEIGHT_OF_TO_FAILURE_DISTANCE * 1.0 / 100.0) * currentSeed.minToUniqueFailures);
-                }
-            } else {
-                dis = currentSeed.isValid() ? currentSeed.minToValidSeeds : currentSeed.minToSeeds;
-            }
-
-            if (currentSeed.isValid()) {
-                if (dis > currMaximumDisValid) {
-                    currMaximumDisValid = dis;
-                    selectedValidIndex = i;
-                }
-            } else {
-                if (dis > currMaximumDisInvalid) {
-                    currMaximumDisInvalid = dis;
-                    selectedInvalidIndex = i;
+                            newSeed.minToValidSeedsAtCov = Math.min(newSeed.minToValidSeedsAtCov, dis);
+                        }
+                    }
                 }
             }
-        }
 
-        if (selectedValidIndex != -1 && currMaximumDisValid >= currMaximumDisInvalid) {
-            Input selectedSeed = savedInputs.get(selectedValidIndex);
-            savedInputs.remove(selectedValidIndex);
-            savedInputs.add(startIndex, selectedSeed);
-        } else {
-            Input selectedSeed = savedInputs.get(selectedInvalidIndex);
-            savedInputs.remove(selectedInvalidIndex);
-            savedInputs.add(startIndex, selectedSeed);
-        }
+            savedInputs.addAll(newSeedsFromCurrentParent);
+            newSeedsFromCurrentParent.clear();
+            savedValidInputs.addAll(newValidSeedsFromCurrentParent);
+            newValidSeedsFromCurrentParent.clear();
+            savedInvalidInputs.addAll(newInvalidSeedsFromCurrentParent);
+            newInvalidSeedsFromCurrentParent.clear();
 
-        long elapsedTime = System.currentTimeMillis() - currentTime;
-        lastRankingTime = (elapsedTime * 1.0) / 1000.0;
-    }
+            long elapsedTime = System.currentTimeMillis() - currentTime;
+            seedUpdatingMilliseconds += elapsedTime;
+            lastUpdatingTime = (elapsedTime * 1.0) / 1000.0;
 
-    public void rankingSeedsValidFirst() {
-        long currentTime = System.currentTimeMillis();
+            // sort
+            savedInputs.subList(currentParentInputIdx + 1, savedInputs.size()).sort(inputComparator);
 
-        // update the distance measures to valid seeds, at valid input space
-        for (int i=0; i<newValidSeedsFromCurrentParent.size(); i++) {
-            Input newValidSeed = newValidSeedsFromCurrentParent.get(i);
-
-            // first, update the old valid seeds
-            for (Input oldValidSeed : savedValidInputs) {
-                int dis = calDistance(newValidSeed, oldValidSeed);
-                oldValidSeed.minToValidSeeds = Math.min(oldValidSeed.minToValidSeeds, dis);
-                newValidSeed.minToValidSeeds = Math.min(newValidSeed.minToValidSeeds, dis);
-            }
-
-            // then, update with the new valid seeds
-            for (int j=i+1; j<newValidSeedsFromCurrentParent.size(); j++) {
-                Input anotherNewValidSeed = newValidSeedsFromCurrentParent.get(j);
-                int dis = calDistance(newValidSeed, anotherNewValidSeed);
-                newValidSeed.minToValidSeeds = Math.min(newValidSeed.minToValidSeeds, dis);
-                anotherNewValidSeed.minToValidSeeds = Math.min(anotherNewValidSeed.minToValidSeeds, dis);
-            }
-        }
-
-        // update the distance measures to invalid seeds, at invalid input space
-        for (int i=0; i<newInvalidSeedsFromCurrentParent.size(); i++) {
-            Input newInvalidSeed = newInvalidSeedsFromCurrentParent.get(i);
-
-            // first, update the old invalid seeds
-            for (Input oldInvalidSeed : savedValidInputs) {
-                int dis = calDistance(newInvalidSeed, oldInvalidSeed);
-                oldInvalidSeed.minToSeeds = Math.min(oldInvalidSeed.minToSeeds, dis);
-                newInvalidSeed.minToSeeds = Math.min(newInvalidSeed.minToSeeds, dis);
-            }
-
-            // then, update with the new valid seeds
-            for (int j=i+1; j<newInvalidSeedsFromCurrentParent.size(); j++) {
-                Input anotherNewInvalidSeed = newInvalidSeedsFromCurrentParent.get(j);
-                int dis = calDistance(newInvalidSeed, anotherNewInvalidSeed);
-                newInvalidSeed.minToSeeds = Math.min(newInvalidSeed.minToSeeds, dis);
-                anotherNewInvalidSeed.minToSeeds = Math.min(anotherNewInvalidSeed.minToSeeds, dis);
-            }
-        }
-
-//        // update the distance measures to unique failures
-//        for (Input uniqueFailure : newUniqueFailedInputs) {
-//            // update the old seeds
-//            for (Input oldSeed : savedInputs) {
-//                oldSeed.minToUniqueFailures = Math.min(oldSeed.minToUniqueFailures, calDistance(oldSeed, uniqueFailure));
-//            }
-//
-//            // then, update the new seeds
-//            for (Input newSeed : newSeedsFromCurrentParent) {
-//                newSeed.minToUniqueFailures = Math.min(newSeed.minToUniqueFailures, calDistance(newSeed, uniqueFailure));
-//            }
-//        }
-
-        // select the not chosen seed in this lifecycle with the maximum discrimination
-        savedInputs.addAll(newSeedsFromCurrentParent);
-        newSeedsFromCurrentParent.clear();
-        savedValidInputs.addAll(newValidSeedsFromCurrentParent);
-        newValidSeedsFromCurrentParent.clear();
-        savedInvalidInputs.addAll(newInvalidSeedsFromCurrentParent);
-        newInvalidSeedsFromCurrentParent.clear();
-        newUniqueFailedInputs.clear();
-
-        // the old seeds starts from 0 to startIndex (included)
-        int startIndex = currentParentInputIdx;
-        if (startIndex + 1 == savedInputs.size()) {
-            // we have to select the seed from all stored one
-            startIndex = 0;
-        } else {
-            // select the seed from startIndex to savedInputs.size()-1 (included)
-            startIndex++;
-        }
-
-        int selectedInvalidIndex = -1;
-        int currMaximumDisInvalid = Integer.MIN_VALUE;
-        int selectedValidIndex = -1;
-        int currMaximumDisValid = Integer.MIN_VALUE;
-        for (int i = startIndex; i < savedInputs.size(); i++) {
-            Input currentSeed = savedInputs.get(i);
-
-            int dis;
-            if (currentSeed.isValid()) {
-                dis = currentSeed.minToValidSeeds != Integer.MAX_VALUE ? currentSeed.minToValidSeeds : 1;
-            } else {
-                dis = currentSeed.minToSeeds != Integer.MAX_VALUE ? currentSeed.minToSeeds : 1;
-            }
-
-//            int dis = currentSeed.isValid() ? currentSeed.minToValidSeeds : currentSeed.minToSeeds;
-
-            if (currentSeed.isValid()) {
-                if (dis > currMaximumDisValid) {
-                    currMaximumDisValid = dis;
-                    maxValidDis = dis;
-                    selectedValidIndex = i;
+            meanValidDis = 0.0;
+            meanInvalidDis = 0.0;
+            int toValidDisCount = 0;
+            int toInvalidDisCount = 0;
+            for (int i=currentParentInputIdx+1; i<savedInputs.size(); i++) {
+                Input currentSeed = savedInputs.get(i);
+                if (currentSeed.isValid() && currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
+                    meanValidDis = meanValidDis * ((double) toValidDisCount / (double) (toValidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toValidDisCount + 1));
+                    toValidDisCount++;
                 }
-            } else {
-                if (dis > currMaximumDisInvalid) {
-                    currMaximumDisInvalid = dis;
-                    maxInvalidDis = dis;
-                    selectedInvalidIndex = i;
+                if (!currentSeed.isValid() && currentSeed.minToValidSeedsAtInput != Integer.MAX_VALUE) {
+                    meanInvalidDis = meanInvalidDis * ((double) toInvalidDisCount / (double) (toInvalidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toInvalidDisCount + 1));
+                    toInvalidDisCount++;
                 }
             }
-        }
 
-        if (selectedValidIndex != -1) {
-            // select a valid seed first
-            Input selectedSeed = savedInputs.get(selectedValidIndex);
-            savedInputs.remove(selectedValidIndex);
-            savedInputs.add(startIndex, selectedSeed);
-        } else {
-            Input selectedSeed = savedInputs.get(selectedInvalidIndex);
-            savedInputs.remove(selectedInvalidIndex);
-            savedInputs.add(startIndex, selectedSeed);
+            long elapsedTime2 = System.currentTimeMillis() - currentTime;
+            seedSortingMilliseconds += elapsedTime2 - elapsedTime;
+            lastSortingTime = ((elapsedTime2 - elapsedTime) * 1.0) / 1000.0;
         }
-
-        long elapsedTime = System.currentTimeMillis() - currentTime;
-        lastRankingTime = (elapsedTime * 1.0) / 1000.0;
+        newUniqueFailures = 0;
     }
 
     @Override
@@ -1319,17 +1135,15 @@ public class RankGuidance implements Guidance {
                 // The number of children to produce is determined by how much of the coverage
                 // pool this parent input hits
                 Input currentParentInput = savedInputs.get(currentParentInputIdx);
-//                int targetNumChildren = getTargetChildrenForParent(currentParentInput);
-                int targetNumChildren = getTargetChildrenForParentNew(currentParentInput);
+                int targetNumChildren;
+                if (CUSTOM_ENERGY) {
+                    targetNumChildren = getTargetChildrenForParentNew(currentParentInput);
+                } else {
+                    targetNumChildren = getTargetChildrenForParent(currentParentInput);
+                }
                 if (numChildrenGeneratedForCurrentParentInput >= targetNumChildren) {
                     // Ranking the pending seeds (including the old and new ones).
-                    if (DISTANCE_ONLY_TO_VALID) {
-                        rankingSeedsToValid();
-                    } else {
-//                        rankingSeeds();
-//                        rankingSeedsNew();
-                        rankingSeedsValidFirst();
-                    }
+                    rankingSeedsConditionally();
 
                     // Select the next saved input to fuzz
                     currentParentInputIdx = (currentParentInputIdx + 1) % savedInputs.size();
@@ -1345,10 +1159,7 @@ public class RankGuidance implements Guidance {
 
                 // Fuzz it to get a new input
                 // infoLog("Mutating input: %s", parent.desc);
-                long currentTime = System.currentTimeMillis();
                 currentInput = parent.fuzz(random);
-                long elapsedTime = System.currentTimeMillis() - currentTime;
-                lastMutateTime = (elapsedTime * 1.0);
 
                 numChildrenGeneratedForCurrentParentInput++;
 
@@ -1536,12 +1347,19 @@ public class RankGuidance implements Guidance {
                     // Save crash to disk
                     int crashIdx = uniqueFailures.size() - 1;
                     String saveFileName = String.format("id_%06d", crashIdx);
-                    File saveFile = new File(savedFailuresDirectory, saveFileName);
-                    GuidanceException.wrap(() -> writeCurrentInputToFile(saveFile));
-                    infoLog("%s", "Found crash: " + error.getClass() + " - " + (msg != null ? msg : ""));
-                    String how = currentInput.desc;
-                    String why = result == Result.FAILURE ? "+crash" : "+hang";
-                    infoLog("Saved - %s %s %s", saveFile.getPath(), how, why);
+                    if (SAVE_INPUT_FILES) {
+                        File saveFile = new File(savedFailuresDirectory, saveFileName);
+                        GuidanceException.wrap(() -> writeCurrentInputToFile(saveFile));
+                        infoLog("%s", "Found crash: " + error.getClass() + " - " + (msg != null ? msg : ""));
+                        String how = currentInput.desc;
+                        String why = result == Result.FAILURE ? "+crash" : "+hang";
+                        infoLog("Saved - %s %s %s", saveFile.getPath(), how, why);
+                    } else {
+                        infoLog("%s", "Found crash: " + error.getClass() + " - " + (msg != null ? msg : ""));
+                        String how = currentInput.desc;
+                        String why = result == Result.FAILURE ? "+crash" : "+hang";
+                        infoLog("Saved - %s %s %s", saveFileName, how, why);
+                    }
 
                     if (EXACT_CRASH_PATH != null && !EXACT_CRASH_PATH.equals("")) {
                         File exactCrashFile = new File(EXACT_CRASH_PATH);
@@ -1556,7 +1374,8 @@ public class RankGuidance implements Guidance {
                     currentInput.coverage = runCoverage.copy();
 
                     // add to unique failures
-                    newUniqueFailedInputs.add(currentInput);
+                    newUniqueFailures++;
+//                    newUniqueFailedInputs.add(currentInput);
                 }
             }
 
@@ -1582,12 +1401,15 @@ public class RankGuidance implements Guidance {
 //            appendLineToFile(statsCasesFile, plotDataCase);
 
             if (save_cov_only) {
-                String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d, %d, %d",
+                String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d, %d, %d, %f, %.2f%%, %f, %.2f%%, %f, %.2f%%",
                         TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
                         numValid, numTrials-numValid,
                         totalCoverage.getNonZeroCount() * 100.0 / totalCoverage.size(),
                         validCoverage.getNonZeroCount() * 100.0 / validCoverage.size(),
-                        totalCoverage.getNonZeroCount(), validCoverage.getNonZeroCount(), cyclesCompleted, savedInputs.size() + newSeedsFromCurrentParent.size(), savedValidInputs.size() + newValidSeedsFromCurrentParent.size());
+                        totalCoverage.getNonZeroCount(), validCoverage.getNonZeroCount(), cyclesCompleted, savedInputs.size() + newSeedsFromCurrentParent.size(), savedValidInputs.size() + newValidSeedsFromCurrentParent.size(),
+                        (seedUpdatingMilliseconds + seedSortingMilliseconds) * 1.0 / 1000.0, (seedUpdatingMilliseconds + seedSortingMilliseconds) * 100.0 / Math.max(1, new Date().getTime() - startTime.getTime()),
+                        seedUpdatingMilliseconds * 1.0 / 1000.0, seedUpdatingMilliseconds  * 100.0 / Math.max(1, new Date().getTime() - startTime.getTime()),
+                        seedSortingMilliseconds * 1.0 / 1000.0, seedSortingMilliseconds  * 100.0 / Math.max(1, new Date().getTime() - startTime.getTime()));
                 appendLineToFile(statsCovCasesFile, plotDataCaseCovOnly);
             }
         });
@@ -1714,9 +1536,14 @@ public class RankGuidance implements Guidance {
         int newInputIdx = numSavedInputs++;
         String saveFileName = String.format("id_%06d", newInputIdx);
         String how = currentInput.desc;
-        File saveFile = new File(savedCorpusDirectory, saveFileName);
-        writeCurrentInputToFile(saveFile);
-        infoLog("Saved - %s %s %s", saveFile.getPath(), how, why);
+        if (SAVE_INPUT_FILES) {
+            File saveFile = new File(savedCorpusDirectory, saveFileName);
+            writeCurrentInputToFile(saveFile);
+            infoLog("Saved - %s %s %s", saveFile.getPath(), how, why);
+            currentInput.saveFile = saveFile;
+        } else {
+            infoLog("Saved - %s %s %s", saveFileName, how, why);
+        }
 
         // If not using guidance, do nothing else
         if (blind) {
@@ -1742,7 +1569,6 @@ public class RankGuidance implements Guidance {
 
         // Third, store basic book-keeping data
         currentInput.id = newInputIdx;
-        currentInput.saveFile = saveFile;
         currentInput.coverage = runCoverage.copy();
         currentInput.nonZeroCoverage = runCoverage.getNonZeroCount();
         currentInput.offspring = 0;
@@ -1855,14 +1681,20 @@ public class RankGuidance implements Guidance {
      */
     public static abstract class Input<K> implements Iterable<Integer> {
 
-        /** Minimum distance to existing seeds. **/
+        /** Minimum distance to existing seeds, at coverage. **/
         int minToSeeds = Integer.MAX_VALUE;
 
         /** Minimum distance to existing unique failures. **/
         int minToUniqueFailures = Integer.MAX_VALUE;
 
-        /** Minimum distance to existing valid seeds. **/
+        /** Minimum distance to existing valid seeds, at coverage. **/
         int minToValidSeeds = Integer.MAX_VALUE;
+
+        /** Minimum distance to existing valid seeds, at input value. **/
+        int minToValidSeedsAtInput = Integer.MAX_VALUE;
+
+        /** Minimum distance to existing valid seeds, at coverage, euclidean. **/
+        double minToValidSeedsAtCov = Double.MAX_VALUE;
 
         /** Whether this input is valid. **/
         boolean valid;
@@ -2105,12 +1937,17 @@ public class RankGuidance implements Guidance {
                 }
             } else {
                 // Stack a bunch of mutations
-
-                // for invalid inputs, mutate more times
-                // for valid inputs, do smaller changes
                 int numMutations;
-                if (this.isValid()) {
-                    numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT / 2);
+                if (CUSTOM_MUTATION_TIME_AND_SIZE) {
+                    double meanTarget;
+                    if (this.isValid()) {
+                        meanTarget = meanValidDis == 0.0 ? MEAN_MUTATION_COUNT : (MEAN_MUTATION_COUNT * meanValidDis / this.minToValidSeedsAtCov);
+                        meanTarget = Math.max(Math.min(meanTarget, 32.0), 2.0);
+                    } else {
+                        meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_COUNT : (MEAN_MUTATION_COUNT * this.minToValidSeedsAtInput / meanInvalidDis);
+                        meanTarget = Math.max(Math.min(meanTarget, 32.0), 2.0);
+                    }
+                    numMutations = sampleGeometric(random, meanTarget);
                 } else {
                     numMutations = sampleGeometric(random, MEAN_MUTATION_COUNT);
                 }
@@ -2119,58 +1956,52 @@ public class RankGuidance implements Guidance {
                 newInput.desc += ",havoc:"+numMutations;
 
                 // for valid input, start with a crossover with another valid seed in a certain probability
-//                if (currentParentInputIdx > 1)
-//                if (this.isValid() && savedValidInputs.size() > 1)
-                if (this.isValid() && savedValidInputs.size() > 1) {
-                    boolean isCrossovered = random.nextDouble() < 0.25;
-                    if (isCrossovered) {
-                        int anotherValidSeedIndex = -1;
-                        while (anotherValidSeedIndex == -1 || this == savedValidInputs.get(anotherValidSeedIndex)) {
-                            anotherValidSeedIndex = random.nextInt(savedValidInputs.size());
+                if (USE_CROSSOVER) {
+                    if (this.isValid() && savedValidInputs.size() > 1) {
+                        boolean isCrossovered = random.nextDouble() < crossoverRate;
+                        if (isCrossovered) {
+                            int anotherValidSeedIndex = -1;
+                            while (anotherValidSeedIndex == -1 || this == savedValidInputs.get(anotherValidSeedIndex)) {
+                                anotherValidSeedIndex = random.nextInt(savedValidInputs.size());
+                            }
+
+                            LinearInput anotherValidSeed = (LinearInput) savedValidInputs.get(anotherValidSeedIndex);
+
+                            // randomly select a middle point
+                            double std1 = (double) newInput.values.size() / 6.0;
+                            double mean1 = (double) newInput.values.size() / 2.0;
+                            double std2 = (double) anotherValidSeed.values.size() / 6.0;
+                            double mean2 = (double) anotherValidSeed.values.size() / 2.0;
+                            int mid1 = (int) Math.round(std1 * random.nextGaussian() + mean1);
+                            int mid2 = (int) Math.round(std2 * random.nextGaussian() + mean2);
+                            mid1 = mid1 < 0 ? 0 : Math.min(mid1, (newInput.values.size() - 1));
+                            mid2 = mid2 < 0 ? 0 : Math.min(mid2, (anotherValidSeed.values.size() - 1));
+
+                            ArrayList<Integer> content = new ArrayList<>();
+
+                            boolean currentIsFirstHalf = random.nextBoolean();
+                            if (currentIsFirstHalf) {
+                                for (int i = 0; i < mid1; i++) {
+                                    content.add(newInput.values.get(i));
+                                }
+                                for (int i = mid2; i < anotherValidSeed.values.size(); i++) {
+                                    content.add(anotherValidSeed.values.get(i));
+                                }
+                                newInput.values.clear();
+                                newInput.values.addAll(content);
+                            } else {
+                                for (int i = 0; i < mid2; i++) {
+                                    content.add(anotherValidSeed.values.get(i));
+                                }
+                                for (int i = mid1; i < newInput.values.size(); i++) {
+                                    content.add(newInput.values.get(i));
+                                }
+                                newInput.values.clear();
+                                newInput.values.addAll(content);
+                            }
+
+                            content.clear();
                         }
-
-//                        while (anotherValidSeedIndex == -1 || this == savedInputs.get(anotherValidSeedIndex) || !savedInputs.get(anotherValidSeedIndex).isValid()) {
-//                            anotherValidSeedIndex = random.nextInt(currentParentInputIdx);
-//                        }
-
-//                        int anotherValidSeedIndex = random.nextInt(savedValidInputs.size());
-                        LinearInput anotherValidSeed = (LinearInput) savedValidInputs.get(anotherValidSeedIndex);
-//                        LinearInput anotherValidSeed = (LinearInput) savedInputs.get(anotherValidSeedIndex);
-
-                        // randomly select a middle point
-                        double std1 = (double) newInput.values.size() / 6.0;
-                        double mean1 = (double) newInput.values.size() / 2.0;
-                        double std2 = (double) anotherValidSeed.values.size() / 6.0;
-                        double mean2 = (double) anotherValidSeed.values.size() / 2.0;
-                        int mid1 = (int) Math.round(std1 * random.nextGaussian() + mean1);
-                        int mid2 = (int) Math.round(std2 * random.nextGaussian() + mean2);
-                        mid1 = mid1 < 0 ? 0 : Math.min(mid1, (newInput.values.size() - 1));
-                        mid2 = mid2 < 0 ? 0 : Math.min(mid2, (newInput.values.size() - 1));
-
-                        ArrayList<Integer> content = new ArrayList<>();
-
-                        boolean currentIsFirstHalf = random.nextBoolean();
-                        if (currentIsFirstHalf) {
-                            for (int i = 0; i < mid1; i++) {
-                                content.add(newInput.values.get(i));
-                            }
-                            for (int i = mid2; i < anotherValidSeed.values.size(); i++) {
-                                content.add(anotherValidSeed.values.get(i));
-                            }
-                            newInput.values.clear();
-                            newInput.values.addAll(content);
-                        } else {
-                            for (int i = 0; i < mid2; i++) {
-                                content.add(anotherValidSeed.values.get(i));
-                            }
-                            for (int i = mid1; i < newInput.values.size(); i++) {
-                                content.add(newInput.values.get(i));
-                            }
-                            newInput.values.clear();
-                            newInput.values.addAll(content);
-                        }
-
-                        content.clear();
                     }
                 }
 
@@ -2193,7 +2024,23 @@ public class RankGuidance implements Guidance {
 
                     // Select a random offset and size
                     int offset = random.nextInt(newInput.values.size());
-                    int mutationSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
+
+                    int mutationSize;
+                    if (CUSTOM_MUTATION_TIME_AND_SIZE) {
+                        double meanTarget;
+                        if (this.isValid()) {
+                            meanTarget = meanValidDis == 0.0 ? MEAN_MUTATION_SIZE : (MEAN_MUTATION_SIZE * meanValidDis / this.minToValidSeedsAtCov);
+                            meanTarget = Math.max(Math.min(meanTarget, 16.0), 1.0);
+                        } else {
+                            meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_SIZE : (MEAN_MUTATION_SIZE * this.minToValidSeedsAtInput / meanInvalidDis);
+                            meanTarget = Math.max(Math.min(meanTarget, 16.0), 1.0);
+                        }
+                        mutationSize = sampleGeometric(random, meanTarget);
+                    } else {
+                        mutationSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
+                    }
+
+//                    int mutationSize = sampleGeometric(random, MEAN_MUTATION_SIZE);
 
                     // desc += String.format(":%d@%d", mutationSize, idx);
 
@@ -2209,64 +2056,6 @@ public class RankGuidance implements Guidance {
                         newInput.values.set(i, mutatedValue);
                     }
                 }
-
-                // three mutators:
-                // 1, add random content (low probability set to 0 or 1)
-                // 2, dup existing content
-                // 3, modify random content (low probability set to 0 or 1)
-
-//                for (int mutation = 1; mutation <= numMutations; mutation++) {
-//                    double mutatorSample = random.nextDouble();
-//                    int mutatorSelected;
-//                    if (mutatorSample < 0.1) {
-//                        // add
-//                        mutatorSelected = 1;
-//                    } else if (mutatorSample < 0.2) {
-//                        // dup
-//                        mutatorSelected = 2;
-//                    } else {
-//                        // modify
-//                        mutatorSelected = 3;
-//                    }
-//
-//                    if (mutatorSelected == 1) {
-//                        // add
-//                        int addOffset = random.nextInt(newInput.values.size());
-//                        int addSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), MAX_INPUT_SIZE - newInput.values.size());
-//
-//                        for (int i = addOffset; i < addOffset + addSize; i++) {
-//                            int addValue = random.nextDouble() < 0.1 ? 0 : random.nextInt(256);
-//                            newInput.values.add(i, addValue);
-//                        }
-//                    } else if (mutatorSelected == 2) {
-//                        // dup
-//                        int addOffset = random.nextInt(newInput.values.size());
-//                        int addSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), MAX_INPUT_SIZE - newInput.values.size());
-//                        int dupSize = Math.min(newInput.values.size(), addSize);
-//                        int dupOffset = random.nextInt(newInput.values.size() - dupSize);
-//
-//                        ArrayList<Integer> content = new ArrayList<>();
-//
-//                        for (int i = dupOffset; i < dupOffset + dupSize; i++) {
-//                            content.add(newInput.values.get(i));
-//                        }
-//
-//                        for (int i = addOffset; i < addOffset + dupSize; i++) {
-//                            newInput.values.add(i, content.get(i - addOffset));
-//                        }
-//
-//                        content.clear();
-//                    } else {
-//                        // modify
-//                        int modifyOffset = random.nextInt(newInput.values.size());
-//                        int modifySize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), newInput.values.size() - modifyOffset);
-//
-//                        for (int i = modifyOffset; i < modifyOffset + modifySize; i++) {
-//                            int modifyValue = random.nextDouble() < 0.1 ? 0 : random.nextInt(256);
-//                            newInput.values.set(i, modifyValue);
-//                        }
-//                    }
-//                }
             }
 
             return newInput;
