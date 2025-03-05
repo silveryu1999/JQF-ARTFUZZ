@@ -329,14 +329,15 @@ public class RankGuidance implements Guidance {
     /** Overhead of seed sorting **/
     protected long seedSortingMilliseconds = 0;
 
+    /** Probability that a standard mutation sets the byte to just one instead of zero. */
+    protected final double MUTATION_ONE_PROBABILITY = 0.05;
+
     /** Comparator of input **/
     protected Comparator<Input> inputComparator = new Comparator<Input>() {
         @Override
         public int compare(Input o1, Input o2) {
-            if (o1.isValid() && o2.isValid()) {
-                return (int) (o2.minToValidSeedsAtCov - o1.minToValidSeedsAtCov);
-            } else if (!o1.isValid() && !o2.isValid()) {
-                return (int) (o2.minToValidSeedsAtCov - o1.minToValidSeedsAtCov);
+            if (o1.isValid() && o2.isValid() || !o1.isValid() && !o2.isValid()) {
+                return Double.compare(o2.minToValidSeedsAtCov, o1.minToValidSeedsAtCov);
             } else if (o1.isValid() && !o2.isValid()) {
                 return -1;
             } else if (!o1.isValid() && o2.isValid()) {
@@ -847,6 +848,13 @@ public class RankGuidance implements Guidance {
         };
     }
 
+    public int calLevenshteinDistance(Input a, Input b) {
+        ArrayList<Integer> aValue = ((LinearInput) a).values;
+        ArrayList<Integer> bValue = ((LinearInput) b).values;
+
+        return 0;
+    }
+
     public int calHammingDistance(Input a, Input b) {
         // hamming distance from a to b
         IntHashSet tempSet = new IntHashSet();
@@ -1095,7 +1103,7 @@ public class RankGuidance implements Guidance {
                     meanValidDis = meanValidDis * ((double) toValidDisCount / (double) (toValidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toValidDisCount + 1));
                     toValidDisCount++;
                 }
-                if (!currentSeed.isValid() && currentSeed.minToValidSeedsAtInput != Integer.MAX_VALUE) {
+                if (!currentSeed.isValid() && currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
                     meanInvalidDis = meanInvalidDis * ((double) toInvalidDisCount / (double) (toInvalidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toInvalidDisCount + 1));
                     toInvalidDisCount++;
                 }
@@ -1682,16 +1690,16 @@ public class RankGuidance implements Guidance {
     public static abstract class Input<K> implements Iterable<Integer> {
 
         /** Minimum distance to existing seeds, at coverage. **/
-        int minToSeeds = Integer.MAX_VALUE;
+//        int minToSeeds = Integer.MAX_VALUE;
 
         /** Minimum distance to existing unique failures. **/
-        int minToUniqueFailures = Integer.MAX_VALUE;
+//        int minToUniqueFailures = Integer.MAX_VALUE;
 
         /** Minimum distance to existing valid seeds, at coverage. **/
-        int minToValidSeeds = Integer.MAX_VALUE;
+//        int minToValidSeeds = Integer.MAX_VALUE;
 
         /** Minimum distance to existing valid seeds, at input value. **/
-        int minToValidSeedsAtInput = Integer.MAX_VALUE;
+//        int minToValidSeedsAtInput = Integer.MAX_VALUE;
 
         /** Minimum distance to existing valid seeds, at coverage, euclidean. **/
         double minToValidSeedsAtCov = Double.MAX_VALUE;
@@ -1942,10 +1950,10 @@ public class RankGuidance implements Guidance {
                     double meanTarget;
                     if (this.isValid()) {
                         meanTarget = meanValidDis == 0.0 ? MEAN_MUTATION_COUNT : (MEAN_MUTATION_COUNT * meanValidDis / this.minToValidSeedsAtCov);
-                        meanTarget = Math.max(Math.min(meanTarget, 32.0), 2.0);
+                        meanTarget = Math.max(Math.min(meanTarget, 16.0), 4.0);
                     } else {
-                        meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_COUNT : (MEAN_MUTATION_COUNT * this.minToValidSeedsAtInput / meanInvalidDis);
-                        meanTarget = Math.max(Math.min(meanTarget, 32.0), 2.0);
+                        meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_COUNT : (MEAN_MUTATION_COUNT * meanInvalidDis / this.minToValidSeedsAtCov);
+                        meanTarget = Math.max(Math.min(meanTarget, 16.0), 4.0);
                     }
                     numMutations = sampleGeometric(random, meanTarget);
                 } else {
@@ -1957,50 +1965,81 @@ public class RankGuidance implements Guidance {
 
                 // for valid input, start with a crossover with another valid seed in a certain probability
                 if (USE_CROSSOVER) {
-                    if (this.isValid() && savedValidInputs.size() > 1) {
+//                    if (this.isValid() && savedValidInputs.size() > 1) {
+//                        boolean isCrossovered = random.nextDouble() < crossoverRate;
+//                        if (isCrossovered) {
+//                            int anotherValidSeedIndex = -1;
+//                            while (anotherValidSeedIndex == -1 || this == savedValidInputs.get(anotherValidSeedIndex)) {
+//                                anotherValidSeedIndex = random.nextInt(savedValidInputs.size());
+//                            }
+//
+//                            LinearInput anotherValidSeed = (LinearInput) savedValidInputs.get(anotherValidSeedIndex);
+//
+//                            // randomly select a middle point
+//                            double std1 = (double) newInput.values.size() / 6.0;
+//                            double mean1 = (double) newInput.values.size() / 2.0;
+//                            double std2 = (double) anotherValidSeed.values.size() / 6.0;
+//                            double mean2 = (double) anotherValidSeed.values.size() / 2.0;
+//                            int mid1 = (int) Math.round(std1 * random.nextGaussian() + mean1);
+//                            int mid2 = (int) Math.round(std2 * random.nextGaussian() + mean2);
+//                            mid1 = mid1 < 0 ? 0 : Math.min(mid1, (newInput.values.size() - 1));
+//                            mid2 = mid2 < 0 ? 0 : Math.min(mid2, (anotherValidSeed.values.size() - 1));
+//
+//                            ArrayList<Integer> content = new ArrayList<>();
+//
+//                            boolean currentIsFirstHalf = random.nextBoolean();
+//                            if (currentIsFirstHalf) {
+//                                for (int i = 0; i < mid1; i++) {
+//                                    content.add(newInput.values.get(i));
+//                                }
+//                                for (int i = mid2; i < anotherValidSeed.values.size(); i++) {
+//                                    content.add(anotherValidSeed.values.get(i));
+//                                }
+//                                newInput.values.clear();
+//                                newInput.values.addAll(content);
+//                            } else {
+//                                for (int i = 0; i < mid2; i++) {
+//                                    content.add(anotherValidSeed.values.get(i));
+//                                }
+//                                for (int i = mid1; i < newInput.values.size(); i++) {
+//                                    content.add(newInput.values.get(i));
+//                                }
+//                                newInput.values.clear();
+//                                newInput.values.addAll(content);
+//                            }
+//
+//                            content.clear();
+//                        }
+//                    }
+                    if (currentParentInputIdx > 1) {
                         boolean isCrossovered = random.nextDouble() < crossoverRate;
                         if (isCrossovered) {
-                            int anotherValidSeedIndex = -1;
-                            while (anotherValidSeedIndex == -1 || this == savedValidInputs.get(anotherValidSeedIndex)) {
-                                anotherValidSeedIndex = random.nextInt(savedValidInputs.size());
+                            int parentSeed1Index = random.nextInt(currentParentInputIdx);
+                            int parentSeed2Index = -1;
+                            while (parentSeed2Index == -1 || parentSeed2Index == parentSeed1Index) {
+                                parentSeed2Index = random.nextInt(currentParentInputIdx);
                             }
 
-                            LinearInput anotherValidSeed = (LinearInput) savedValidInputs.get(anotherValidSeedIndex);
+                            LinearInput parentSeed1 = (LinearInput) savedInputs.get(parentSeed1Index);
+                            LinearInput parentSeed2 = (LinearInput) savedInputs.get(parentSeed2Index);
 
-                            // randomly select a middle point
-                            double std1 = (double) newInput.values.size() / 6.0;
-                            double mean1 = (double) newInput.values.size() / 2.0;
-                            double std2 = (double) anotherValidSeed.values.size() / 6.0;
-                            double mean2 = (double) anotherValidSeed.values.size() / 2.0;
+                            double std1 = (double) parentSeed1.values.size() / 6.0;
+                            double mean1 = (double) parentSeed1.values.size() / 2.0;
+                            double std2 = (double) parentSeed2.values.size() / 6.0;
+                            double mean2 = (double) parentSeed2.values.size() / 2.0;
                             int mid1 = (int) Math.round(std1 * random.nextGaussian() + mean1);
                             int mid2 = (int) Math.round(std2 * random.nextGaussian() + mean2);
-                            mid1 = mid1 < 0 ? 0 : Math.min(mid1, (newInput.values.size() - 1));
-                            mid2 = mid2 < 0 ? 0 : Math.min(mid2, (anotherValidSeed.values.size() - 1));
+                            mid1 = mid1 < 0 ? 0 : Math.min(mid1, (parentSeed1.values.size() - 1));
+                            mid2 = mid2 < 0 ? 0 : Math.min(mid2, (parentSeed2.values.size() - 1));
 
-                            ArrayList<Integer> content = new ArrayList<>();
-
-                            boolean currentIsFirstHalf = random.nextBoolean();
-                            if (currentIsFirstHalf) {
-                                for (int i = 0; i < mid1; i++) {
-                                    content.add(newInput.values.get(i));
-                                }
-                                for (int i = mid2; i < anotherValidSeed.values.size(); i++) {
-                                    content.add(anotherValidSeed.values.get(i));
-                                }
-                                newInput.values.clear();
-                                newInput.values.addAll(content);
-                            } else {
-                                for (int i = 0; i < mid2; i++) {
-                                    content.add(anotherValidSeed.values.get(i));
-                                }
-                                for (int i = mid1; i < newInput.values.size(); i++) {
-                                    content.add(newInput.values.get(i));
-                                }
-                                newInput.values.clear();
-                                newInput.values.addAll(content);
+                            newInput.values.clear();
+                            for (int i = 0; i < mid1; i++) {
+                                newInput.values.add(parentSeed1.values.get(i));
                             }
-
-                            content.clear();
+                            for (int i = mid2; i < parentSeed2.values.size(); i++) {
+                                newInput.values.add(parentSeed2.values.get(i));
+                            }
+                            numMutations--;
                         }
                     }
                 }
@@ -2018,7 +2057,10 @@ public class RankGuidance implements Guidance {
 //                    numMutations--;
 //                }
 
-                boolean setToZero = random.nextDouble() < MUTATION_ZERO_PROBABILITY; // one out of 10 times
+                double setValue = random.nextDouble();
+                boolean setToZero = setValue < MUTATION_ZERO_PROBABILITY; // half of one out of 10 times
+                boolean setToOne = setValue < MUTATION_ONE_PROBABILITY; // half of one out of 10 times
+//                boolean setToZero = random.nextDouble() < MUTATION_ZERO_PROBABILITY; // one out of 10 times
 
                 for (int mutation = 1; mutation <= numMutations; mutation++) {
 
@@ -2030,10 +2072,10 @@ public class RankGuidance implements Guidance {
                         double meanTarget;
                         if (this.isValid()) {
                             meanTarget = meanValidDis == 0.0 ? MEAN_MUTATION_SIZE : (MEAN_MUTATION_SIZE * meanValidDis / this.minToValidSeedsAtCov);
-                            meanTarget = Math.max(Math.min(meanTarget, 16.0), 1.0);
+                            meanTarget = Math.max(Math.min(meanTarget, 8.0), 2.0);
                         } else {
-                            meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_SIZE : (MEAN_MUTATION_SIZE * this.minToValidSeedsAtInput / meanInvalidDis);
-                            meanTarget = Math.max(Math.min(meanTarget, 16.0), 1.0);
+                            meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_SIZE : (MEAN_MUTATION_SIZE * meanInvalidDis / this.minToValidSeedsAtCov);
+                            meanTarget = Math.max(Math.min(meanTarget, 8.0), 2.0);
                         }
                         mutationSize = sampleGeometric(random, meanTarget);
                     } else {
@@ -2052,7 +2094,7 @@ public class RankGuidance implements Guidance {
                         }
 
                         // Otherwise, apply a random mutation
-                        int mutatedValue = setToZero ? 0 : random.nextInt(256);
+                        int mutatedValue = setToZero ? (setToOne ? 255 : 0) : random.nextInt(256);
                         newInput.values.set(i, mutatedValue);
                     }
                 }

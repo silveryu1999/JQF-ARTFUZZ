@@ -2,7 +2,6 @@
 
 scripts=(
 "run-random.sh"
-"run-zest.sh"
 "run-rank-cm-0.sh"
 "run-rank-cm-25.sh"
 "run-rank-cm-50.sh"

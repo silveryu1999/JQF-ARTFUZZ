@@ -12,5 +12,4 @@ export JVM_OPTS="$JVM_OPTS -Djqf.ei.MAP_SIZE_POW=17"
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b CompilerTest testWithGenerator jqf-zest-7/
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b CompilerTest testWithGenerator jqf-zest-8/
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b CompilerTest testWithGenerator jqf-zest-9/
-
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b CompilerTest testWithGenerator jqf-zest-10/
