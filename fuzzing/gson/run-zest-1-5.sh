@@ -11,3 +11,5 @@ export JVM_OPTS="$JVM_OPTS -Djqf.ei.MAP_SIZE_POW=13"
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJSONParser jqf-zest-1/
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJSONParser jqf-zest-2/
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJSONParser jqf-zest-3/
+../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJSONParser jqf-zest-4/
+../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJSONParser jqf-zest-5/

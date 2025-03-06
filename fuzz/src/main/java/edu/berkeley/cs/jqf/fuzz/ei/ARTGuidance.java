@@ -182,9 +182,6 @@ public class ARTGuidance implements Guidance {
     /** The file where saved plot data is written. */
     protected File statsFile;
 
-    /** The file where saved plot data (cases indexed) is written. */
-    protected File statsCasesFile;
-
     /** The file where saved plot data (cases indexed and only cov++) is written. */
     protected File statsCovCasesFile;
 
@@ -428,7 +425,6 @@ public class ARTGuidance implements Guidance {
             IOUtils.createDirectory(allInputsDirectory, "failure");
         }
         this.statsFile = new File(outputDirectory, "plot_data");
-//        this.statsCasesFile = new File(outputDirectory, "plot_data_cases");
         this.statsCovCasesFile = new File(outputDirectory, "plot_data_cases_cov_only");
         this.logFile = new File(outputDirectory, "fuzz.log");
         this.currentInputFile = new File(outputDirectory, ".cur_input");
@@ -439,7 +435,6 @@ public class ARTGuidance implements Guidance {
         // typo and that was not a directory we wanted to nuke.
         // We also do not check if the deletes are actually successful.
         statsFile.delete();
-//        statsCasesFile.delete();
         statsCovCasesFile.delete();
         logFile.delete();
         coverageFile.delete();
@@ -452,26 +447,20 @@ public class ARTGuidance implements Guidance {
 
         appendLineToFile(statsFile, getStatNames());
 
-//        appendLineToFile(statsCasesFile, getStatCasesNames());
-//        String plotDataCase = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d",
-//                TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
-//                numValid, numTrials-numValid, 0.0, 0.0, 0, 0);
-//        appendLineToFile(statsCasesFile, plotDataCase);
-
         appendLineToFile(statsCovCasesFile, getStatCasesNames());
-        String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d",
+        String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d",
                 TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
-                numValid, numTrials-numValid, 0.0, 0.0, 0, 0);
+                numValid, numTrials-numValid, 0.0, 0.0, 0, 0, 0);
         appendLineToFile(statsCovCasesFile, plotDataCaseCovOnly);
     }
 
     protected String getStatNames() {
         return "# unix_time, cycles_done, cur_path, paths_total, " +
-                "map_size, unique_crashes, all_crashes, execs_per_sec, valid_inputs, invalid_inputs, valid_cov, all_covered_probes, valid_covered_probes";
+                "map_size, unique_crashes, all_crashes, execs_per_sec, valid_inputs, invalid_inputs, valid_cov, all_covered_probes, valid_covered_probes, eof_counts";
     }
 
     protected String getStatCasesNames() {
-        return "# unix_time, input_id, total_unique_failures, total_failures, total_valid, total_invalid, total_cov, total_valid_cov, total_branch, total_valid_branch";
+        return "# unix_time, input_id, total_unique_failures, total_failures, total_valid, total_invalid, total_cov, total_valid_cov, total_branch, total_valid_branch, eof_counts";
     }
 
     /* Writes a line of text to a given log file. */
@@ -600,10 +589,10 @@ public class ARTGuidance implements Guidance {
 //                numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount);
 //        appendLineToFile(statsFile, plotData);
 
-        String plotData = String.format("%d, %d, %d, %d, %.2f%%, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d",
+        String plotData = String.format("%d, %d, %d, %d, %.2f%%, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d, %d",
                 TimeUnit.MILLISECONDS.toSeconds(now.getTime()), cyclesCompleted, currentParentInputIdx,
                 numSavedInputs, nonZeroFraction, uniqueFailures.size(), totalFailures, intervalExecsPerSecDouble,
-                numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount);
+                numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount, EOFcount);
         appendLineToFile(statsFile, plotData);
     }
 
@@ -1046,21 +1035,13 @@ public class ARTGuidance implements Guidance {
                 GuidanceException.wrap(() -> writeCurrentInputToFile(saveFile));
             }
 
-//            String plotDataCase = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d",
-//                    TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
-//                    numValid, numTrials-numValid,
-//                    totalCoverage.getNonZeroCount() * 100.0 / totalCoverage.size(),
-//                    validCoverage.getNonZeroCount() * 100.0 / validCoverage.size(),
-//                    totalCoverage.getNonZeroCount(), validCoverage.getNonZeroCount());
-//            appendLineToFile(statsCasesFile, plotDataCase);
-
             if (save_cov_only) {
-                String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d",
+                String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d",
                         TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
                         numValid, numTrials-numValid,
                         totalCoverage.getNonZeroCount() * 100.0 / totalCoverage.size(),
                         validCoverage.getNonZeroCount() * 100.0 / validCoverage.size(),
-                        totalCoverage.getNonZeroCount(), validCoverage.getNonZeroCount());
+                        totalCoverage.getNonZeroCount(), validCoverage.getNonZeroCount(), EOFcount);
                 appendLineToFile(statsCovCasesFile, plotDataCaseCovOnly);
             }
         });

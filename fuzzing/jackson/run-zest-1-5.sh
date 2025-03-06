@@ -10,3 +10,6 @@ export JVM_OPTS="$JVM_OPTS -Xmx40g"
 export JVM_OPTS="$JVM_OPTS -Djqf.ei.MAP_SIZE_POW=16"
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJsonReadValue jqf-zest-1/
 ../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJsonReadValue jqf-zest-2/
+../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJsonReadValue jqf-zest-3/
+../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJsonReadValue jqf-zest-4/
+../../bin/jqf-art -c .:$(../../scripts/classpath.sh):$(./classpath.sh) -b JsonTest fuzzJsonReadValue jqf-zest-5/

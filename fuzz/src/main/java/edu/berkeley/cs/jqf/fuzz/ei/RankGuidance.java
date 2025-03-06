@@ -180,9 +180,6 @@ public class RankGuidance implements Guidance {
     /** The file where saved plot data is written. */
     protected File statsFile;
 
-    /** The file where saved plot data (cases indexed) is written. */
-    protected File statsCasesFile;
-
     /** The file where saved plot data (cases indexed and only cov++) is written. */
     protected File statsCovCasesFile;
 
@@ -270,9 +267,6 @@ public class RankGuidance implements Guidance {
     /** Set of saved invalid seeds **/
     protected ArrayList<Input> savedInvalidInputs = new ArrayList<>();
 
-    /** Set of new unique failed inputs. **/
-    protected ArrayList<Input> newUniqueFailedInputs = new ArrayList<>();
-
     /** Number of new unique failures. **/
     protected int newUniqueFailures = 0;
 
@@ -287,10 +281,6 @@ public class RankGuidance implements Guidance {
 
     /** Last counts for calculating Euclidean seeds distances **/
     protected int EuclideanCount = 0;
-
-    /** Weight of failure distance **/
-    /** from 0 to 100 () **/
-    protected final int WEIGHT_OF_TO_FAILURE_DISTANCE = Integer.getInteger("jqf.ei.WEIGHT_OF_TO_FAILURE_DISTANCE", 0);
 
     /** Whether to use custom mutation. **/
     protected final boolean CUSTOM_MUTATION = Boolean.getBoolean("jqf.ei.CUSTOM_MUTATION");
@@ -309,6 +299,12 @@ public class RankGuidance implements Guidance {
 
     /** Whether to save input files **/
     protected final boolean SAVE_INPUT_FILES = Boolean.getBoolean("jqf.ei.SAVE_INPUT_FILES");
+
+    /** Whether to use weight distance **/
+    protected final boolean USE_WEIGHT_DISTANCE = Boolean.getBoolean("jqf.ei.USE_WEIGHT_DISTANCE");
+
+    /** Whether to use Hamming distance **/
+    protected final boolean USE_HAMMING_DISTANCE = Boolean.getBoolean("jqf.ei.USE_HAMMING_DISTANCE");
 
     /** Probability of crossover **/
     /** from 0 to 100 ()**/
@@ -336,8 +332,10 @@ public class RankGuidance implements Guidance {
     protected Comparator<Input> inputComparator = new Comparator<Input>() {
         @Override
         public int compare(Input o1, Input o2) {
-            if (o1.isValid() && o2.isValid() || !o1.isValid() && !o2.isValid()) {
+            if (o1.isValid() && o2.isValid()) {
                 return Double.compare(o2.minToValidSeedsAtCov, o1.minToValidSeedsAtCov);
+            } else if (!o1.isValid() && !o2.isValid()) {
+                return Double.compare(o2.minToInvalidSeedsAtCov, o1.minToInvalidSeedsAtCov);
             } else if (o1.isValid() && !o2.isValid()) {
                 return -1;
             } else if (!o1.isValid() && o2.isValid()) {
@@ -346,6 +344,21 @@ public class RankGuidance implements Guidance {
             return 0;
         }
     };
+
+    /** Set of hashes of all valid paths executed so far. */
+    protected IntHashSet uniqueValidPaths = new IntHashSet();
+
+    /** Set of hashes of all invalid paths executed so far. */
+    protected IntHashSet uniqueInvalidPaths = new IntHashSet();
+
+    /** Cumulative unique traces count for valid inputs. */
+    protected ICoverage validUniqueTracesCount = CoverageFactory.newInstance();
+
+    /** Cumulative unique traces count for invalid inputs. */
+    protected ICoverage invalidUniqueTracesCount = CoverageFactory.newInstance();
+
+    /** Epsilon for weight. */
+    protected final double EPSILON = 0.01;
 
     /**
      * Creates a new Zest guidance instance with optional duration,
@@ -497,7 +510,6 @@ public class RankGuidance implements Guidance {
             IOUtils.createDirectory(allInputsDirectory, "failure");
         }
         this.statsFile = new File(outputDirectory, "plot_data");
-//        this.statsCasesFile = new File(outputDirectory, "plot_data_cases");
         this.statsCovCasesFile = new File(outputDirectory, "plot_data_cases_cov_only");
         this.logFile = new File(outputDirectory, "fuzz.log");
         this.currentInputFile = new File(outputDirectory, ".cur_input");
@@ -508,7 +520,6 @@ public class RankGuidance implements Guidance {
         // typo and that was not a directory we wanted to nuke.
         // We also do not check if the deletes are actually successful.
         statsFile.delete();
-//        statsCasesFile.delete();
         statsCovCasesFile.delete();
         logFile.delete();
         coverageFile.delete();
@@ -521,26 +532,20 @@ public class RankGuidance implements Guidance {
 
         appendLineToFile(statsFile, getStatNames());
 
-//        appendLineToFile(statsCasesFile, getStatCasesNames());
-//        String plotDataCase = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d",
-//                TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
-//                numValid, numTrials-numValid, 0.0, 0.0, 0, 0);
-//        appendLineToFile(statsCasesFile, plotDataCase);
-
         appendLineToFile(statsCovCasesFile, getStatCasesNames());
-        String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d, %d, %d, %f, %.2f%%, %f, %.2f%%, %f, %.2f%%",
+        String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d, %d, %d, %f, %.2f%%, %f, %.2f%%, %f, %.2f%%, %d, %d, %d",
                 TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
-                numValid, numTrials-numValid, 0.0, 0.0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+                numValid, numTrials-numValid, 0.0, 0.0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0);
         appendLineToFile(statsCovCasesFile, plotDataCaseCovOnly);
     }
 
     protected String getStatNames() {
         return "# unix_time, cycles_done, cur_path, paths_total, " +
-            "map_size, unique_crashes, all_crashes, execs_per_sec, valid_inputs, invalid_inputs, valid_cov, all_covered_probes, valid_covered_probes";
+            "map_size, unique_crashes, all_crashes, execs_per_sec, valid_inputs, invalid_inputs, valid_cov, all_covered_probes, valid_covered_probes, eof_counts, unique_valid_traces, unique_invalid_traces";
     }
 
     protected String getStatCasesNames() {
-        return "# unix_time, input_id, total_unique_failures, total_failures, total_valid, total_invalid, total_cov, total_valid_cov, total_branch, total_valid_branch, cycles, total_seeds, valid_seeds, overhead_total_seconds, overhead_total_percentage, update_total_seconds, update_total_percentage, sort_total_seconds, sort_total_percentage";
+        return "# unix_time, input_id, total_unique_failures, total_failures, total_valid, total_invalid, total_cov, total_valid_cov, total_branch, total_valid_branch, cycles, total_seeds, valid_seeds, overhead_total_seconds, overhead_total_percentage, update_total_seconds, update_total_percentage, sort_total_seconds, sort_total_percentage, eof_counts, unique_valid_traces, unique_invalid_traces";
     }
 
     /* Writes a line of text to a given log file. */
@@ -626,18 +631,9 @@ public class RankGuidance implements Guidance {
         } else {
             Input currentParentInput = savedInputs.get(currentParentInputIdx);
             currentParentInputDesc = currentParentInputIdx + " ";
-            if (CUSTOM_ENERGY) {
-                currentParentInputDesc += currentParentInput.isFavored() ? "(favored)" : "(not favored)";
-                currentParentInputDesc += currentParentInput.isValid() ? "(valid)" : "(invalid)";
-                currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentInput +
-                        "/" + getTargetChildrenForParentNew(currentParentInput) + " mutations}";
-            } else {
-                currentParentInputDesc += currentParentInput.isFavored() ? "(favored)" : "(not favored)";
-                currentParentInputDesc += currentParentInput.isValid() ? "(valid)" : "(invalid)";
-                currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentInput +
-                    "/" + getTargetChildrenForParent(currentParentInput) + " mutations}";
-            }
-
+            currentParentInputDesc += currentParentInput.isFavored() ? "(favored)" : "(not favored)";
+            currentParentInputDesc += currentParentInput.isValid() ? "(valid)" : "(invalid)";
+            currentParentInputDesc += " {" + numChildrenGeneratedForCurrentParentInput + "/" + (CUSTOM_ENERGY ? getTargetChildrenForParentNew(currentParentInput) : getTargetChildrenForParent(currentParentInput)) + " mutations}";
         }
 
         int nonZeroCount = totalCoverage.getNonZeroCount();
@@ -676,7 +672,7 @@ public class RankGuidance implements Guidance {
                 console.printf("Unique Failures (New):     (%,d)\n", newUniqueFailures);
                 console.printf("Mean Valid/Invalid Dis:    (%f / %f)\n", meanValidDis, meanInvalidDis);
                 console.printf("Current parent input: %s\n", currentParentInputDesc);
-                console.printf("Current parent Distance:   %f\n", savedInputs.get(currentParentInputIdx).minToValidSeedsAtCov);
+                console.printf("Current parent Distance:   %f\n", savedInputs.get(currentParentInputIdx).isValid() ? savedInputs.get(currentParentInputIdx).minToValidSeedsAtCov : savedInputs.get(currentParentInputIdx).minToInvalidSeedsAtCov);
                 console.printf("Execution speed:      %,d/sec now | %,d/sec overall\n", intervalExecsPerSec, execsPerSec);
                 console.printf("Total coverage:       %,d branches (%.2f%% of map)\n", nonZeroCount, nonZeroFraction);
                 console.printf("Valid coverage:       %,d branches (%.2f%% of map)\n", nonZeroValidCount, nonZeroValidFraction);
@@ -684,6 +680,8 @@ public class RankGuidance implements Guidance {
                 console.printf("Last Update/Sort Time:     (%f / %f)\n", lastUpdatingTime, lastSortingTime);
                 console.printf("Last Avg Euclidean Time:   %f\n", avgCalEuclideanTime);
                 console.printf("Last Euclidean Counts:     %d\n", EuclideanCount);
+                console.printf("Unique Valid Traces:       %d\n", uniqueValidPaths.size());
+                console.printf("Unique Invalid Traces:     %d\n", uniqueInvalidPaths.size());
                 console.printf("Overhead Updating / Sorting:       (%.2f%% / %.2f%%)\n", seedUpdatingMilliseconds * 100.0 / elapsedMilliseconds, seedSortingMilliseconds * 100.0 / elapsedMilliseconds);
                 console.printf("JVM Total Memory:     %,f\n", (Runtime.getRuntime().totalMemory()) / (1024.0 * 1024));
                 console.printf("JVM Max Memory:       %,f\n", (Runtime.getRuntime().maxMemory()) / (1024.0 * 1024));
@@ -697,10 +695,10 @@ public class RankGuidance implements Guidance {
 //                numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount);
 //        appendLineToFile(statsFile, plotData);
 
-        String plotData = String.format("%d, %d, %d, %d, %.2f%%, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d",
+        String plotData = String.format("%d, %d, %d, %d, %.2f%%, %d, %d, %.2f, %d, %d, %.2f%%, %d, %d, %d, %d, %d",
                 TimeUnit.MILLISECONDS.toSeconds(now.getTime()), cyclesCompleted, currentParentInputIdx,
                 numSavedInputs, nonZeroFraction, uniqueFailures.size(), totalFailures, intervalExecsPerSecDouble,
-                numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount);
+                numValid, numTrials-numValid, nonZeroValidFraction, nonZeroCount, nonZeroValidCount, EOFcount, uniqueValidPaths.size(), uniqueInvalidPaths.size());
         appendLineToFile(statsFile, plotData);
     }
 
@@ -750,7 +748,7 @@ public class RankGuidance implements Guidance {
 
     protected int getTargetChildrenForParentNew(Input parentInput) {
         // Baseline is a constant
-        int target = NUM_CHILDREN_BASELINE;
+        int target = parentInput.isValid() ? NUM_CHILDREN_BASELINE : NUM_CHILDREN_BASELINE / 2;
 
         // We like inputs that cover many things, so scale with fraction of max
         if (maxCoverage > 0) {
@@ -765,16 +763,12 @@ public class RankGuidance implements Guidance {
         // adjust the target number according to the distance
         if (parentInput.isValid()) {
             if (meanValidDis != 0.0 && parentInput.minToValidSeedsAtCov != Double.MAX_VALUE) {
-                target = (int) ((double) target * Math.min(Math.max((parentInput.minToValidSeedsAtCov / meanValidDis), 0.1), 2.0));
+                target = (int) ((double) target * Math.max(Math.min((parentInput.minToValidSeedsAtCov / meanValidDis), 2.0), 0.5));
             }
         } else {
-            if (meanInvalidDis != 0.0 && parentInput.minToValidSeedsAtCov != Double.MAX_VALUE) {
-                target = (int) ((double) target * Math.min(Math.max((parentInput.minToValidSeedsAtCov / meanValidDis), 0.1), 2.0));
+            if (meanInvalidDis != 0.0 && parentInput.minToInvalidSeedsAtCov != Double.MAX_VALUE) {
+                target = (int) ((double) target * Math.max(Math.min((parentInput.minToInvalidSeedsAtCov / meanInvalidDis), 2.0), 0.5));
             }
-        }
-
-        if (parentInput.isValid()) {
-            target = target * 2;
         }
 
         return target;
@@ -848,73 +842,80 @@ public class RankGuidance implements Guidance {
         };
     }
 
-    public int calLevenshteinDistance(Input a, Input b) {
-        ArrayList<Integer> aValue = ((LinearInput) a).values;
-        ArrayList<Integer> bValue = ((LinearInput) b).values;
+    public double calHammingDistance(Input a, Input b) {
+        double distance = 0.0;
+        Counter c1 = a.coverage.getCounter();
+        Counter c2 = b.coverage.getCounter();
+        IntArrayList nonZeroKeys1 = (IntArrayList) c1.getNonZeroIndices();
+        IntArrayList nonZeroKeys2 = (IntArrayList) c2.getNonZeroIndices();
+        nonZeroKeys1.sortThis();
+        nonZeroKeys2.sortThis();
 
-        return 0;
-    }
-
-    public int calHammingDistance(Input a, Input b) {
-        // hamming distance from a to b
-        IntHashSet tempSet = new IntHashSet();
-        IntList nonZeroKeys1 = a.coverage.getCounter().getNonZeroIndices();
-        IntList nonZeroKeys2 = b.coverage.getCounter().getNonZeroIndices();
-
-        int intersection = 0;
-
-        if (nonZeroKeys1.size() < nonZeroKeys2.size()) {
-            tempSet.addAll(nonZeroKeys1);
-            IntIterator iter = nonZeroKeys2.intIterator();
-            while(iter.hasNext()){
-                int idx = iter.next();
-                if (tempSet.contains(idx)) {
-                    intersection++;
+        if (USE_WEIGHT_DISTANCE) {
+            IntHashSet uniquePaths = a.isValid() ? uniqueValidPaths : uniqueInvalidPaths;
+            Counter counter = a.isValid() ? validUniqueTracesCount.getCounter() : invalidUniqueTracesCount.getCounter();
+            int i = 0;
+            int j = 0;
+            while (i < nonZeroKeys1.size() && j < nonZeroKeys2.size()) {
+                int idx1 = nonZeroKeys1.get(i);
+                int idx2 = nonZeroKeys2.get(j);
+                if (idx1 == idx2) {
+                    i++;
+                    j++;
+                } else if (idx1 < idx2) {
+                    distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx1)));
+                    i++;
+                } else {
+                    distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx2)));
+                    j++;
                 }
             }
+
+            while (i < nonZeroKeys1.size()) {
+                int idx1 = nonZeroKeys1.get(i);
+                distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx1)));
+                i++;
+            }
+
+            while (j < nonZeroKeys2.size()) {
+                int idx2 = nonZeroKeys2.get(j);
+                distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx2)));
+                j++;
+            }
         } else {
-            tempSet.addAll(nonZeroKeys2);
-            IntIterator iter = nonZeroKeys1.intIterator();
-            while(iter.hasNext()){
-                int idx = iter.next();
-                if (tempSet.contains(idx)) {
-                    intersection++;
+            int i = 0;
+            int j = 0;
+            while (i < nonZeroKeys1.size() && j < nonZeroKeys2.size()) {
+                int idx1 = nonZeroKeys1.get(i);
+                int idx2 = nonZeroKeys2.get(j);
+                if (idx1 == idx2) {
+                    i++;
+                    j++;
+                } else if (idx1 < idx2) {
+                    distance += 1;
+                    i++;
+                } else {
+                    distance += 1;
+                    j++;
                 }
+            }
+
+            while (i < nonZeroKeys1.size()) {
+                distance += 1;
+                i++;
+            }
+
+            while (j < nonZeroKeys2.size()) {
+                distance += 1;
+                j++;
             }
         }
 
-        return nonZeroKeys1.size() + nonZeroKeys2.size() - 2 * intersection;
+        return distance;
     }
 
     public double calEuclideanDistance(Input a, Input b) {
         double distance = 0.0;
-//        IntHashSet tempSet1 = new IntHashSet();
-//        IntHashSet tempSet2 = new IntHashSet();
-//        Counter c1 = a.coverage.getCounter();
-//        Counter c2 = b.coverage.getCounter();
-//        IntList nonZeroKeys1 = c1.getNonZeroIndices();
-//        IntList nonZeroKeys2 = c2.getNonZeroIndices();
-//
-//        tempSet1.addAll(nonZeroKeys1);
-//        IntIterator iter2 = nonZeroKeys2.intIterator();
-//        while (iter2.hasNext()) {
-//            int idx = iter2.next();
-//            if (tempSet1.contains(idx)) {
-////                distance += Math.sqrt((c1.get(idx) - c2.get(idx)) * (c1.get(idx) - c2.get(idx)));
-//                distance += (c1.get(idx) - c2.get(idx)) * (c1.get(idx) - c2.get(idx));
-//            } else {
-//                distance += c2.get(idx) * c2.get(idx);
-//            }
-//        }
-//
-//        tempSet2.addAll(nonZeroKeys2);
-//        IntIterator iter1 = nonZeroKeys1.intIterator();
-//        while (iter1.hasNext()) {
-//            int idx = iter1.next();
-//            if (!tempSet2.contains(idx)) {
-//                distance += c1.get(idx) * c1.get(idx);
-//            }
-//        }
 
         Counter c1 = a.coverage.getCounter();
         Counter c2 = b.coverage.getCounter();
@@ -923,52 +924,80 @@ public class RankGuidance implements Guidance {
         nonZeroKeys1.sortThis();
         nonZeroKeys2.sortThis();
 
-        int i = 0;
-        int j = 0;
-        while (i < nonZeroKeys1.size() && j < nonZeroKeys2.size()) {
-            int idx1 = nonZeroKeys1.get(i);
-            int idx2 = nonZeroKeys2.get(j);
-            if (idx1 == idx2) {
-                distance += (c1.get(idx1) - c2.get(idx2)) * (c1.get(idx1) - c2.get(idx2));
+        if (USE_WEIGHT_DISTANCE) {
+            IntHashSet uniquePaths = a.isValid() ? uniqueValidPaths : uniqueInvalidPaths;
+            Counter counter = a.isValid() ? validUniqueTracesCount.getCounter() : invalidUniqueTracesCount.getCounter();
+            int i = 0;
+            int j = 0;
+            while (i < nonZeroKeys1.size() && j < nonZeroKeys2.size()) {
+                int idx1 = nonZeroKeys1.get(i);
+                int idx2 = nonZeroKeys2.get(j);
+                if (idx1 == idx2) {
+                    distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx1) + EPSILON)) * ((c1.getAtIndex(idx1) - c2.getAtIndex(idx2)) * (c1.getAtIndex(idx1) - c2.getAtIndex(idx2)));
+                    i++;
+                    j++;
+                } else if (idx1 < idx2) {
+                    distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx1) + EPSILON)) * (c1.getAtIndex(idx1) * c1.getAtIndex(idx1));
+                    i++;
+                } else {
+                    distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx2) + EPSILON)) * (c2.getAtIndex(idx2) * c2.getAtIndex(idx2));
+                    j++;
+                }
+            }
+
+            while (i < nonZeroKeys1.size()) {
+                int idx1 = nonZeroKeys1.get(i);
+                distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx1) + EPSILON)) * (c1.getAtIndex(idx1) * c1.getAtIndex(idx1));
                 i++;
-                j++;
-            } else if (idx1 < idx2) {
-                distance += c1.get(idx1) * c1.get(idx1);
-                i++;
-            } else {
-                distance += c2.get(idx1) * c2.get(idx1);
+            }
+
+            while (j < nonZeroKeys2.size()) {
+                int idx2 = nonZeroKeys2.get(j);
+                distance += Math.log(1.0 + ((double) uniquePaths.size() / (double) counter.getAtIndex(idx2) + EPSILON)) * (c2.getAtIndex(idx2) * c2.getAtIndex(idx2));
                 j++;
             }
-        }
+        } else {
+            int i = 0;
+            int j = 0;
+            while (i < nonZeroKeys1.size() && j < nonZeroKeys2.size()) {
+                int idx1 = nonZeroKeys1.get(i);
+                int idx2 = nonZeroKeys2.get(j);
+                if (idx1 == idx2) {
+                    distance += (c1.getAtIndex(idx1) - c2.getAtIndex(idx2)) * (c1.getAtIndex(idx1) - c2.getAtIndex(idx2));
+                    i++;
+                    j++;
+                } else if (idx1 < idx2) {
+                    distance += c1.getAtIndex(idx1) * c1.getAtIndex(idx1);
+                    i++;
+                } else {
+                    distance += c2.getAtIndex(idx2) * c2.getAtIndex(idx2);
+                    j++;
+                }
+            }
 
-        while (i < nonZeroKeys1.size()) {
-            distance += c1.get(nonZeroKeys1.get(i)) * c1.get(nonZeroKeys1.get(i));
-            i++;
-        }
+            while (i < nonZeroKeys1.size()) {
+                int idx1 = nonZeroKeys1.get(i);
+                distance += c1.getAtIndex(idx1) * c1.getAtIndex(idx1);
+                i++;
+            }
 
-        while (j < nonZeroKeys2.size()) {
-            distance += c2.get(nonZeroKeys2.get(j)) * c2.get(nonZeroKeys2.get(j));
-            j++;
+            while (j < nonZeroKeys2.size()) {
+                int idx2 = nonZeroKeys2.get(j);
+                distance += c2.getAtIndex(idx2) * c2.getAtIndex(idx2);
+                j++;
+            }
         }
 
         return Math.sqrt(distance);
     }
 
-    public int calHammingDistanceInput(Input a, Input b) {
-        ArrayList<Integer> aValue = ((LinearInput) a).values;
-        ArrayList<Integer> bValue = ((LinearInput) b).values;
-
-        int distance = 0;
-
-        for (int i = 0; i < Math.min(aValue.size(), bValue.size()); i++) {
-            distance += Integer.bitCount(aValue.get(i) ^ bValue.get(i));
+    public void updateTracesCount(IntList nonZeroBranches, Boolean isValid) {
+        NonZeroCachingCounter counter = (NonZeroCachingCounter) (isValid ? validUniqueTracesCount.getCounter() : invalidUniqueTracesCount.getCounter());
+        IntIterator iter = nonZeroBranches.intIterator();
+        while(iter.hasNext()){
+            int idx = iter.next();
+            counter.incrementAtIndex(idx, 1);
         }
-
-        if (aValue.size() != bValue.size()) {
-            distance += Math.abs(aValue.size() - bValue.size()) * 8;
-        }
-
-        return distance;
     }
 
     @Override
@@ -1004,11 +1033,14 @@ public class RankGuidance implements Guidance {
             int toValidDisCount = 0;
             int toInvalidDisCount = 0;
             for (Input currentSeed : savedInputs) {
-                if (currentSeed.isValid() && currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
-                    meanValidDis = meanValidDis * ((double) toValidDisCount / (double) (toValidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toValidDisCount + 1));
-                }
-                if (!currentSeed.isValid() && currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
-                    meanInvalidDis = meanInvalidDis * ((double) toInvalidDisCount / (double) (toInvalidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toInvalidDisCount + 1));
+                if (currentSeed.isValid()) {
+                    if (currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
+                        meanValidDis = meanValidDis * ((double) toValidDisCount / (double) (toValidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toValidDisCount + 1));
+                    }
+                } else {
+                    if (currentSeed.minToInvalidSeedsAtCov != Double.MAX_VALUE) {
+                        meanInvalidDis = meanInvalidDis * ((double) toInvalidDisCount / (double) (toInvalidDisCount + 1)) + currentSeed.minToInvalidSeedsAtCov / ((double) (toInvalidDisCount + 1));
+                    }
                 }
             }
 
@@ -1025,55 +1057,53 @@ public class RankGuidance implements Guidance {
                 Input newSeed = newSeedsFromCurrentParent.get(i);
 
                 if (newSeed.isValid()) {
-                    // update with the old seeds
+                    // update with the old valid seeds
                     for (Input oldSeed : savedInputs) {
-                        long calEuclideanStartTime = System.currentTimeMillis();
-                        double dis = calEuclideanDistance(oldSeed, newSeed);
-                        avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
-                        EuclideanCount++;
-
-                        oldSeed.minToValidSeedsAtCov = Math.min(oldSeed.minToValidSeedsAtCov, dis);
                         if (oldSeed.isValid()) {
+                            long calEuclideanStartTime = System.currentTimeMillis();
+                            double dis = USE_HAMMING_DISTANCE ? calHammingDistance(oldSeed, newSeed) : calEuclideanDistance(oldSeed, newSeed);
+                            avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
+                            EuclideanCount++;
+                            oldSeed.minToValidSeedsAtCov = Math.min(oldSeed.minToValidSeedsAtCov, dis);
                             newSeed.minToValidSeedsAtCov = Math.min(newSeed.minToValidSeedsAtCov, dis);
                         }
                     }
 
-                    // update with the new seeds
+                    // update with the new valid seeds
                     for (int j=i+1; j<newSeedsFromCurrentParent.size(); j++) {
                         Input anotherNewSeed = newSeedsFromCurrentParent.get(j);
-                        long calEuclideanStartTime = System.currentTimeMillis();
-                        double dis = calEuclideanDistance(anotherNewSeed, newSeed);
-                        avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
-                        EuclideanCount++;
-
-                        anotherNewSeed.minToValidSeedsAtCov = Math.min(anotherNewSeed.minToValidSeedsAtCov, dis);
                         if (anotherNewSeed.isValid()) {
+                            long calEuclideanStartTime = System.currentTimeMillis();
+                            double dis = USE_HAMMING_DISTANCE ? calHammingDistance(anotherNewSeed, newSeed) : calEuclideanDistance(anotherNewSeed, newSeed);
+                            avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
+                            EuclideanCount++;
+                            anotherNewSeed.minToValidSeedsAtCov = Math.min(anotherNewSeed.minToValidSeedsAtCov, dis);
                             newSeed.minToValidSeedsAtCov = Math.min(newSeed.minToValidSeedsAtCov, dis);
                         }
                     }
                 } else {
-                    // update with the old seeds
+                    // update with the old invalid seeds
                     for (Input oldSeed : savedInputs) {
-                        if (oldSeed.isValid()) {
+                        if (!oldSeed.isValid()) {
                             long calEuclideanStartTime = System.currentTimeMillis();
-                            double dis = calEuclideanDistance(oldSeed, newSeed);
+                            double dis = USE_HAMMING_DISTANCE ? calHammingDistance(oldSeed, newSeed) : calEuclideanDistance(oldSeed, newSeed);
                             avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
                             EuclideanCount++;
-
-                            newSeed.minToValidSeedsAtCov = Math.min(newSeed.minToValidSeedsAtCov, dis);
+                            oldSeed.minToInvalidSeedsAtCov = Math.min(oldSeed.minToInvalidSeedsAtCov, dis);
+                            newSeed.minToInvalidSeedsAtCov = Math.min(newSeed.minToInvalidSeedsAtCov, dis);
                         }
                     }
 
-                    // update with the new seeds
+                    // update with the new invalid seeds
                     for (int j=i+1; j<newSeedsFromCurrentParent.size(); j++) {
                         Input anotherNewSeed = newSeedsFromCurrentParent.get(j);
-                        if (anotherNewSeed.isValid()) {
+                        if (!anotherNewSeed.isValid()) {
                             long calEuclideanStartTime = System.currentTimeMillis();
-                            double dis = calEuclideanDistance(anotherNewSeed, newSeed);
+                            double dis = USE_HAMMING_DISTANCE ? calHammingDistance(anotherNewSeed, newSeed) : calEuclideanDistance(anotherNewSeed, newSeed);
                             avgCalEuclideanTime = avgCalEuclideanTime * ((double) EuclideanCount / (double) (EuclideanCount + 1)) + (System.currentTimeMillis() - calEuclideanStartTime * 1.0) / 1000.0 / ((double) (EuclideanCount + 1));
                             EuclideanCount++;
-
-                            newSeed.minToValidSeedsAtCov = Math.min(newSeed.minToValidSeedsAtCov, dis);
+                            anotherNewSeed.minToInvalidSeedsAtCov = Math.min(anotherNewSeed.minToInvalidSeedsAtCov, dis);
+                            newSeed.minToInvalidSeedsAtCov = Math.min(newSeed.minToInvalidSeedsAtCov, dis);
                         }
                     }
                 }
@@ -1085,6 +1115,7 @@ public class RankGuidance implements Guidance {
             newValidSeedsFromCurrentParent.clear();
             savedInvalidInputs.addAll(newInvalidSeedsFromCurrentParent);
             newInvalidSeedsFromCurrentParent.clear();
+            newUniqueFailures = 0;
 
             long elapsedTime = System.currentTimeMillis() - currentTime;
             seedUpdatingMilliseconds += elapsedTime;
@@ -1099,13 +1130,16 @@ public class RankGuidance implements Guidance {
             int toInvalidDisCount = 0;
             for (int i=currentParentInputIdx+1; i<savedInputs.size(); i++) {
                 Input currentSeed = savedInputs.get(i);
-                if (currentSeed.isValid() && currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
-                    meanValidDis = meanValidDis * ((double) toValidDisCount / (double) (toValidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toValidDisCount + 1));
-                    toValidDisCount++;
-                }
-                if (!currentSeed.isValid() && currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
-                    meanInvalidDis = meanInvalidDis * ((double) toInvalidDisCount / (double) (toInvalidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toInvalidDisCount + 1));
-                    toInvalidDisCount++;
+                if (currentSeed.isValid()) {
+                    if (currentSeed.minToValidSeedsAtCov != Double.MAX_VALUE) {
+                        meanValidDis = meanValidDis * ((double) toValidDisCount / (double) (toValidDisCount + 1)) + currentSeed.minToValidSeedsAtCov / ((double) (toValidDisCount + 1));
+                        toValidDisCount++;
+                    }
+                } else {
+                    if (currentSeed.minToInvalidSeedsAtCov != Double.MAX_VALUE) {
+                        meanInvalidDis = meanInvalidDis * ((double) toInvalidDisCount / (double) (toInvalidDisCount + 1)) + currentSeed.minToInvalidSeedsAtCov / ((double) (toInvalidDisCount + 1));
+                        toInvalidDisCount++;
+                    }
                 }
             }
 
@@ -1113,7 +1147,6 @@ public class RankGuidance implements Guidance {
             seedSortingMilliseconds += elapsedTime2 - elapsedTime;
             lastSortingTime = ((elapsedTime2 - elapsedTime) * 1.0) / 1000.0;
         }
-        newUniqueFailures = 0;
     }
 
     @Override
@@ -1400,16 +1433,8 @@ public class RankGuidance implements Guidance {
                 GuidanceException.wrap(() -> writeCurrentInputToFile(saveFile));
             }
 
-//            String plotDataCase = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d",
-//                    TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
-//                    numValid, numTrials-numValid,
-//                    totalCoverage.getNonZeroCount() * 100.0 / totalCoverage.size(),
-//                    validCoverage.getNonZeroCount() * 100.0 / validCoverage.size(),
-//                    totalCoverage.getNonZeroCount(), validCoverage.getNonZeroCount());
-//            appendLineToFile(statsCasesFile, plotDataCase);
-
             if (save_cov_only) {
-                String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d, %d, %d, %f, %.2f%%, %f, %.2f%%, %f, %.2f%%",
+                String plotDataCaseCovOnly = String.format("%d, %d, %d, %d, %d, %d, %.2f%%, %.2f%%, %d, %d, %d, %d, %d, %f, %.2f%%, %f, %.2f%%, %f, %.2f%%, %d, %d, %d",
                         TimeUnit.MILLISECONDS.toSeconds(new Date().getTime()), numTrials, uniqueFailures.size(), totalFailures,
                         numValid, numTrials-numValid,
                         totalCoverage.getNonZeroCount() * 100.0 / totalCoverage.size(),
@@ -1417,7 +1442,8 @@ public class RankGuidance implements Guidance {
                         totalCoverage.getNonZeroCount(), validCoverage.getNonZeroCount(), cyclesCompleted, savedInputs.size() + newSeedsFromCurrentParent.size(), savedValidInputs.size() + newValidSeedsFromCurrentParent.size(),
                         (seedUpdatingMilliseconds + seedSortingMilliseconds) * 1.0 / 1000.0, (seedUpdatingMilliseconds + seedSortingMilliseconds) * 100.0 / Math.max(1, new Date().getTime() - startTime.getTime()),
                         seedUpdatingMilliseconds * 1.0 / 1000.0, seedUpdatingMilliseconds  * 100.0 / Math.max(1, new Date().getTime() - startTime.getTime()),
-                        seedSortingMilliseconds * 1.0 / 1000.0, seedSortingMilliseconds  * 100.0 / Math.max(1, new Date().getTime() - startTime.getTime()));
+                        seedSortingMilliseconds * 1.0 / 1000.0, seedSortingMilliseconds  * 100.0 / Math.max(1, new Date().getTime() - startTime.getTime()),
+                        EOFcount, uniqueValidPaths.size(), uniqueInvalidPaths.size());
                 appendLineToFile(statsCovCasesFile, plotDataCaseCovOnly);
             }
         });
@@ -1428,6 +1454,17 @@ public class RankGuidance implements Guidance {
         // Coverage before
         int nonZeroBefore = totalCoverage.getNonZeroCount();
         int validNonZeroBefore = validCoverage.getNonZeroCount();
+
+        // update the unique traces and species counts
+        if (USE_WEIGHT_DISTANCE) {
+            if (result == Result.SUCCESS && uniqueValidPaths.add(runCoverage.hashCode())) {
+                IntList nonZeroValidBranches = runCoverage.getCovered();
+                updateTracesCount(nonZeroValidBranches, true);
+            } else if (result == Result.INVALID && uniqueInvalidPaths.add(runCoverage.hashCode())) {
+                IntList nonZeroInvalidBranches = runCoverage.getCovered();
+                updateTracesCount(nonZeroInvalidBranches, false);
+            }
+        }
 
         // Update total coverage
         boolean coverageBitsUpdated = totalCoverage.updateBits(runCoverage);
@@ -1702,6 +1739,9 @@ public class RankGuidance implements Guidance {
 //        int minToValidSeedsAtInput = Integer.MAX_VALUE;
 
         /** Minimum distance to existing valid seeds, at coverage, euclidean. **/
+        double minToInvalidSeedsAtCov = Double.MAX_VALUE;
+
+        /** Minimum distance to existing valid seeds, at coverage, euclidean. **/
         double minToValidSeedsAtCov = Double.MAX_VALUE;
 
         /** Whether this input is valid. **/
@@ -1952,7 +1992,7 @@ public class RankGuidance implements Guidance {
                         meanTarget = meanValidDis == 0.0 ? MEAN_MUTATION_COUNT : (MEAN_MUTATION_COUNT * meanValidDis / this.minToValidSeedsAtCov);
                         meanTarget = Math.max(Math.min(meanTarget, 16.0), 4.0);
                     } else {
-                        meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_COUNT : (MEAN_MUTATION_COUNT * meanInvalidDis / this.minToValidSeedsAtCov);
+                        meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_COUNT : (MEAN_MUTATION_COUNT * meanInvalidDis / this.minToInvalidSeedsAtCov);
                         meanTarget = Math.max(Math.min(meanTarget, 16.0), 4.0);
                     }
                     numMutations = sampleGeometric(random, meanTarget);
@@ -1965,52 +2005,6 @@ public class RankGuidance implements Guidance {
 
                 // for valid input, start with a crossover with another valid seed in a certain probability
                 if (USE_CROSSOVER) {
-//                    if (this.isValid() && savedValidInputs.size() > 1) {
-//                        boolean isCrossovered = random.nextDouble() < crossoverRate;
-//                        if (isCrossovered) {
-//                            int anotherValidSeedIndex = -1;
-//                            while (anotherValidSeedIndex == -1 || this == savedValidInputs.get(anotherValidSeedIndex)) {
-//                                anotherValidSeedIndex = random.nextInt(savedValidInputs.size());
-//                            }
-//
-//                            LinearInput anotherValidSeed = (LinearInput) savedValidInputs.get(anotherValidSeedIndex);
-//
-//                            // randomly select a middle point
-//                            double std1 = (double) newInput.values.size() / 6.0;
-//                            double mean1 = (double) newInput.values.size() / 2.0;
-//                            double std2 = (double) anotherValidSeed.values.size() / 6.0;
-//                            double mean2 = (double) anotherValidSeed.values.size() / 2.0;
-//                            int mid1 = (int) Math.round(std1 * random.nextGaussian() + mean1);
-//                            int mid2 = (int) Math.round(std2 * random.nextGaussian() + mean2);
-//                            mid1 = mid1 < 0 ? 0 : Math.min(mid1, (newInput.values.size() - 1));
-//                            mid2 = mid2 < 0 ? 0 : Math.min(mid2, (anotherValidSeed.values.size() - 1));
-//
-//                            ArrayList<Integer> content = new ArrayList<>();
-//
-//                            boolean currentIsFirstHalf = random.nextBoolean();
-//                            if (currentIsFirstHalf) {
-//                                for (int i = 0; i < mid1; i++) {
-//                                    content.add(newInput.values.get(i));
-//                                }
-//                                for (int i = mid2; i < anotherValidSeed.values.size(); i++) {
-//                                    content.add(anotherValidSeed.values.get(i));
-//                                }
-//                                newInput.values.clear();
-//                                newInput.values.addAll(content);
-//                            } else {
-//                                for (int i = 0; i < mid2; i++) {
-//                                    content.add(anotherValidSeed.values.get(i));
-//                                }
-//                                for (int i = mid1; i < newInput.values.size(); i++) {
-//                                    content.add(newInput.values.get(i));
-//                                }
-//                                newInput.values.clear();
-//                                newInput.values.addAll(content);
-//                            }
-//
-//                            content.clear();
-//                        }
-//                    }
                     if (currentParentInputIdx > 1) {
                         boolean isCrossovered = random.nextDouble() < crossoverRate;
                         if (isCrossovered) {
@@ -2044,19 +2038,6 @@ public class RankGuidance implements Guidance {
                     }
                 }
 
-                // start with an extension in a certain probability
-                // extension: change the last part of bytes, so it may get longer in input generation
-//                if (random.nextDouble() < 0.1) {
-//                    boolean setToZero = random.nextDouble() < MUTATION_ZERO_PROBABILITY; // one out of 10 times
-//                    int extendSize = Math.min(sampleGeometric(random, MEAN_MUTATION_SIZE), newInput.values.size());
-//                    for (int i=newInput.values.size()-extendSize; i<newInput.values.size(); i++) {
-//                        int mutatedValue = setToZero ? 0 : random.nextInt(256);
-//                        newInput.values.set(i, mutatedValue);
-//                    }
-//                    // consume one mutation
-//                    numMutations--;
-//                }
-
                 double setValue = random.nextDouble();
                 boolean setToZero = setValue < MUTATION_ZERO_PROBABILITY; // half of one out of 10 times
                 boolean setToOne = setValue < MUTATION_ONE_PROBABILITY; // half of one out of 10 times
@@ -2074,7 +2055,7 @@ public class RankGuidance implements Guidance {
                             meanTarget = meanValidDis == 0.0 ? MEAN_MUTATION_SIZE : (MEAN_MUTATION_SIZE * meanValidDis / this.minToValidSeedsAtCov);
                             meanTarget = Math.max(Math.min(meanTarget, 8.0), 2.0);
                         } else {
-                            meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_SIZE : (MEAN_MUTATION_SIZE * meanInvalidDis / this.minToValidSeedsAtCov);
+                            meanTarget = meanInvalidDis == 0.0 ? MEAN_MUTATION_SIZE : (MEAN_MUTATION_SIZE * meanInvalidDis / this.minToInvalidSeedsAtCov);
                             meanTarget = Math.max(Math.min(meanTarget, 8.0), 2.0);
                         }
                         mutationSize = sampleGeometric(random, meanTarget);
@@ -2093,8 +2074,13 @@ public class RankGuidance implements Guidance {
                             break;
                         }
 
+                        int mutatedValue;
                         // Otherwise, apply a random mutation
-                        int mutatedValue = setToZero ? (setToOne ? 255 : 0) : random.nextInt(256);
+                        if (CUSTOM_MUTATION_TIME_AND_SIZE) {
+                            mutatedValue = setToZero ? (setToOne ? 255 : 0) : random.nextInt(256);
+                        } else {
+                            mutatedValue = setToZero ? 0 : random.nextInt(256);
+                        }
                         newInput.values.set(i, mutatedValue);
                     }
                 }
