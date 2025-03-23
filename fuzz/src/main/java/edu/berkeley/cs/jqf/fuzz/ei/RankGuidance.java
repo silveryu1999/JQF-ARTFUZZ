@@ -748,7 +748,7 @@ public class RankGuidance implements Guidance {
 
     protected int getTargetChildrenForParentNew(Input parentInput) {
         // Baseline is a constant
-        int target = parentInput.isValid() ? NUM_CHILDREN_BASELINE : NUM_CHILDREN_BASELINE / 2;
+        int target = parentInput.isValid() ? NUM_CHILDREN_BASELINE * 2 : NUM_CHILDREN_BASELINE;
 
         // We like inputs that cover many things, so scale with fraction of max
         if (maxCoverage > 0) {
